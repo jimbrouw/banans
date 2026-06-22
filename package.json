@@ -9,25 +9,29 @@
     "build:uxp": "npm run build",
     "lint": "eslint .",
     "test": "vitest run",
+    "eval": "vitest run src/eval/baseline.eval.test.ts --reporter=verbose",
+    "eval:reference": "tsx scripts/analyse-reference.ts",
     "preview": "vite preview"
   },
   "dependencies": {
     "lucide-react": "^1.21.0",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react": "^16.14.0",
+    "react-dom": "^16.14.0"
   },
   "devDependencies": {
     "@adobe/premierepro": "^26.3.0",
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.12.3",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
+    "@types/react": "^16.14.68",
+    "@types/react-dom": "^16.9.25",
     "@vitejs/plugin-react": "^6.0.1",
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
+    "fast-xml-parser": "^5.9.3",
     "globals": "^17.6.0",
     "playwright": "^1.61.0",
+    "tsx": "^4.22.4",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
     "vite": "^8.0.12",

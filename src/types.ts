@@ -48,6 +48,7 @@ export interface SequenceInfo {
 export interface PremiereAdapter {
   getActiveSequence(): Promise<SequenceInfo>
   getTranscript(sequenceId: string): Promise<TranscriptSegment[]>
+  importTranscriptFile(): Promise<TranscriptSegment[]>
   addMarkers(sequenceId: string, decisions: EditDecision[]): Promise<void>
   createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[]): Promise<string>
 }

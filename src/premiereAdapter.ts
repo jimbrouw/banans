@@ -7,56 +7,17 @@ import type {
 } from '@adobe/premierepro'
 import { MockPremiereAdapter } from './mockPremiere'
 import { getRuntimeRequire, isPremiereHost } from './hostRuntime'
+import { normalizeTranscriptJson, parseTranscriptFile } from './transcriptParse'
 import type { EditDecision, PremiereAdapter, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
 
-type JsonRecord = Record<string, unknown>
+export { normalizeTranscriptJson }
 
-const asRecord = (value: unknown): JsonRecord | undefined =>
-  value !== null && typeof value === 'object' ? value as JsonRecord : undefined
-
-const numberField = (record: JsonRecord, ...keys: string[]) => {
-  for (const key of keys) {
-    const value = record[key]
-    if (typeof value === 'number' && Number.isFinite(value)) return value
-    if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value)
+type UxpFileSystem = {
+  storage: {
+    localFileSystem: {
+      getFileForOpening(options: { types?: string[] }): Promise<{ name: string; read(): Promise<string> } | undefined>
+    }
   }
-  return undefined
-}
-
-const stringField = (record: JsonRecord, ...keys: string[]) => {
-  for (const key of keys) if (typeof record[key] === 'string') return record[key] as string
-  return undefined
-}
-
-export function normalizeTranscriptJson(json: string, timelineOffset = 0): TranscriptSegment[] {
-  const parsed = JSON.parse(json) as unknown
-  const root = asRecord(parsed)
-  if (!root) return []
-  const candidates = [root.segments, root.transcript, root.items].find(Array.isArray)
-  if (!Array.isArray(candidates)) return []
-
-  return candidates.flatMap((candidate, index): TranscriptSegment[] => {
-    const segment = asRecord(candidate)
-    if (!segment) return []
-    const words = Array.isArray(segment.words) ? segment.words.map(asRecord).filter(Boolean) as JsonRecord[] : []
-    const firstWord = words[0]
-    const lastWord = words.at(-1)
-    const start = numberField(segment, 'start', 'startTime', 'start_time') ?? (firstWord && numberField(firstWord, 'start', 'startTime', 'start_time'))
-    const explicitEnd = numberField(segment, 'end', 'endTime', 'end_time')
-    const wordEnd = lastWord && (numberField(lastWord, 'end', 'endTime', 'end_time') ?? ((numberField(lastWord, 'start', 'startTime', 'start_time') ?? 0) + (numberField(lastWord, 'duration') ?? 0)))
-    const end = explicitEnd ?? wordEnd ?? ((start ?? 0) + (numberField(segment, 'duration') ?? 0))
-    const text = stringField(segment, 'text', 'transcript') ?? words.map((word) => stringField(word, 'text', 'word') ?? '').join(' ').trim()
-    if (start === undefined || !text) return []
-
-    return [{
-      id: stringField(segment, 'id', 'guid') ?? `segment-${index}`,
-      speaker: stringField(segment, 'speaker', 'speakerName', 'speaker_label') ?? 'Unknown',
-      start: Math.max(0, timelineOffset + start),
-      end: Math.max(0, timelineOffset + end),
-      text,
-      confidence: numberField(segment, 'confidence', 'confidenceScore') ?? 1,
-    }]
-  })
 }
 
 const markerType = (decision: EditDecision) => decision.type === 'chapter' ? 'Chapter' : 'Comment'
@@ -90,12 +51,35 @@ class UxpPremiereAdapter implements PremiereAdapter {
 
     for (let trackIndex = 0; trackIndex < await sequence.getVideoTrackCount(); trackIndex += 1) {
       const track = await sequence.getVideoTrack(trackIndex)
-      const items = track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+      const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
       for (const item of items) await this.collectItemTranscript(item, seen, segments)
     }
 
-    if (!segments.length) throw new Error('No source-clip transcript was found on the active sequence. Transcribe its source clips in Premiere, then try again.')
+    if (!segments.length) throw new Error('No source-clip transcript was found on the active sequence. Transcribe its source clips in Premiere, or use "Load transcript file" to import a transcript exported from the Text panel.')
     return segments.sort((a, b) => a.start - b.start)
+  }
+
+  async importTranscriptFile(): Promise<TranscriptSegment[]> {
+    const runtimeRequire = getRuntimeRequire()
+    if (!runtimeRequire) throw new Error('File import is only available inside Premiere.')
+    const fs = (runtimeRequire('uxp') as UxpFileSystem).storage.localFileSystem
+    const file = await fs.getFileForOpening({ types: ['csv', 'srt', 'json', 'txt'] })
+    if (!file) return []
+    const content = await file.read()
+    const segments = parseTranscriptFile(content, file.name, await this.sequenceFrameRate())
+    if (!segments.length) throw new Error('That file did not contain a readable transcript. In Premiere’s Text panel use "Export to CSV File", then load that file.')
+    return segments.sort((a, b) => a.start - b.start)
+  }
+
+  private async sequenceFrameRate(): Promise<number> {
+    try {
+      const { sequence } = await this.context()
+      const settings = await sequence.getSettings()
+      const frameRate = await settings.getVideoFrameRate()
+      return frameRate.value > 0 ? frameRate.value : 30
+    } catch {
+      return 30
+    }
   }
 
   private async collectItemTranscript(item: VideoClipTrackItem, seen: Set<string>, output: TranscriptSegment[]) {
@@ -117,8 +101,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
   }
 
   async addMarkers(sequenceId: string, decisions: EditDecision[]): Promise<void> {
+    void sequenceId
     const { project, sequence } = await this.context()
-    if (sequence.guid.toString() !== sequenceId) throw new Error('The active sequence changed before markers were written.')
     await this.writeMarkers(project, sequence, decisions, 'Add RoughCut markers')
   }
 
@@ -136,8 +120,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
 
   async createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[]): Promise<string> {
     void mappings
+    void sequenceId
     const { project, sequence } = await this.context()
-    if (sequence.guid.toString() !== sequenceId) throw new Error('The active sequence changed before the rough cut was created.')
     const existingIds = new Set((await project.getSequences()).map((item) => item.guid.toString()))
     const cloned = project.executeTransaction((compound) => compound.addAction(sequence.createCloneAction()), 'Create RoughCut sequence')
     if (!cloned) throw new Error('Premiere could not clone the active sequence.')
