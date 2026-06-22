@@ -4,6 +4,9 @@ import { analyseTranscript } from './analyse'
 import { sequence as demoSequence } from './mockPremiere'
 import { isPremiereHost, premiere } from './premiereAdapter'
 import type { AnalysisSettings, EditDecision, MarkerType, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
+import type { CutPoint, DetectedSources } from './cutEngine'
+import { getAutopilotOptions } from './autopilot'
+import type { AutopilotOption } from './autopilot'
 import './App.css'
 
 const markerMeta: Record<MarkerType, { name: string; color: string; icon: typeof Sparkles }> = {
@@ -27,8 +30,14 @@ export default function App() {
   const [sequence, setSequence] = useState<SequenceInfo>(demoSequence)
   const [mappings, setMappings] = useState<SpeakerMapping[]>([{ speaker: 'Host', camera: 'Camera 1' }, { speaker: 'Guest', camera: 'Camera 2' }])
   const [decisions, setDecisions] = useState<EditDecision[]>([])
+  const [segments, setSegments] = useState<TranscriptSegment[]>([])
   const [status, setStatus] = useState<'loading' | 'ready' | 'analysing' | 'results' | 'creating' | 'created' | 'error'>('loading')
   const [error, setError] = useState('')
+  const [autoCutDet, setAutoCutDet] = useState<DetectedSources | null>(null)
+  const [autoCutStatus, setAutoCutStatus] = useState<'idle' | 'detecting' | 'detected' | 'applying' | 'done' | 'error'>('idle')
+  const [autoCutError, setAutoCutError] = useState('')
+  const [autoCutResult, setAutoCutResult] = useState('')
+  const [selectedAutopilotOptionId, setSelectedAutopilotOptionId] = useState<string | null>(null)
   const selected = decisions.filter((d) => d.selected)
   const counts = useMemo(() => Object.keys(markerMeta).map((type) => ({ type: type as MarkerType, count: decisions.filter((d) => d.type === type).length })).filter((x) => x.count), [decisions])
 
@@ -39,6 +48,7 @@ export default function App() {
   }, [])
 
   const analyseSegments = async (transcript: TranscriptSegment[]) => {
+    setSegments(transcript)
     const speakers = [...new Set(transcript.map((segment) => segment.speaker))]
     const resolvedMappings = speakers.map((speaker, index) => mappings.find((mapping) => mapping.speaker === speaker) ?? { speaker, camera: index === 0 ? 'Camera 1' : index === 1 ? 'Camera 2' : 'Wide' })
     setMappings(resolvedMappings)
@@ -75,6 +85,68 @@ export default function App() {
 
   const updateMapping = (speaker: string, camera: string) => setMappings((current) => current.map((m) => m.speaker === speaker ? { ...m, camera } : m))
   const patchSettings = (patch: Partial<AnalysisSettings>) => setSettings((current) => ({ ...current, ...patch }))
+
+  const detectCameras = async () => {
+    try {
+      setAutoCutError('')
+      setAutoCutStatus('detecting')
+      const det = await premiere.detectSources()
+      setAutoCutDet(det)
+      setAutoCutStatus('detected')
+    } catch (reason) {
+      setAutoCutError(reason instanceof Error ? reason.message : String(reason))
+      setAutoCutStatus('error')
+    }
+  }
+
+  const testAutoCut = async () => {
+    if (!autoCutDet) return
+    try {
+      setAutoCutError('')
+      setAutoCutStatus('applying')
+      const testEndFrame = Math.min(600, autoCutDet.totalFrames)
+      const testCuts: CutPoint[] = [
+        { frame: 0, camera: 1 },
+        { frame: 150, camera: Math.min(2, autoCutDet.sources.length) },
+        { frame: 300, camera: Math.min(3, autoCutDet.sources.length) },
+        { frame: 450, camera: 1 },
+      ]
+      const name = await premiere.applyCutMap(sequence.id, testCuts, autoCutDet, testEndFrame)
+      setAutoCutResult(name)
+      setAutoCutStatus('done')
+    } catch (reason) {
+      setAutoCutError(reason instanceof Error ? reason.message : String(reason))
+      setAutoCutStatus('error')
+    }
+  }
+
+  const autopilotOptions = useMemo(() => {
+    if (!segments.length || !autoCutDet) return []
+    const sources = autoCutDet.sources.map(s => ({ camera: s.camera, name: s.name }))
+    return getAutopilotOptions(segments, mappings, sources, autoCutDet.totalFrames, autoCutDet.frameRate)
+  }, [segments, mappings, autoCutDet])
+
+  const applyAutopilot = async (option: AutopilotOption) => {
+    if (!autoCutDet) return
+    try {
+      setAutoCutError('')
+      setAutoCutStatus('applying')
+      const name = await premiere.applyCutMap(
+        sequence.id,
+        option.cuts,
+        autoCutDet,
+        autoCutDet.totalFrames
+      )
+      setAutoCutResult(name)
+      setAutoCutStatus('done')
+    } catch (reason) {
+      setAutoCutError(reason instanceof Error ? reason.message : String(reason))
+      setAutoCutStatus('error')
+    }
+  }
+
+  const selectedOption = autopilotOptions.find(o => o.id === selectedAutopilotOptionId) || autopilotOptions[0]
+
 
   return (
     <main className="app-shell">
@@ -126,6 +198,91 @@ export default function App() {
           {status === 'created' && <div className="success"><Check size={16} /> Created “{sequence.name} - AI Rough Cut” with {selected.length} markers.</div>}
         </section>}
       </section>
-    </main>
-  )
-}
+
+        <section className="section">
+          <div className="section-title"><h2>Auto-Cut Engine</h2><span className="hint">Phase 2 · Autopilot</span></div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <button className="primary" onClick={detectCameras} disabled={autoCutStatus === 'detecting' || autoCutStatus === 'applying'} style={{ flex: 1 }}>
+              <Camera size={17} />{autoCutStatus === 'detecting' ? 'Detecting...' : 'Detect Cameras'}
+            </button>
+            <button className="primary" onClick={testAutoCut} disabled={!autoCutDet || autoCutStatus === 'applying'} style={{ flex: 1 }}>
+              <Scissors size={17} />{autoCutStatus === 'applying' ? 'Applying...' : 'Test Auto-Cut'}
+            </button>
+          </div>
+          {autoCutDet && autoCutStatus !== 'error' && <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>
+            {autoCutDet.sources.length} cameras detected · {autoCutDet.frameRate} fps · {autoCutDet.totalFrames} frames · target V{autoCutDet.targetTrackIndex + 1}
+            {autoCutDet.sources.map(s => <div key={s.camera} style={{ paddingLeft: 8 }}>C{s.camera}: {s.name} (V{s.vIndex + 1}, offset {s.clipStartFrame}f)</div>)}
+          </div>}
+
+          {autopilotOptions.length > 0 && (
+            <div className="autopilot-section" style={{ borderTop: '1px solid rgba(0,0,0,0.1)', paddingTop: 10, marginTop: 10 }}>
+              <h3 style={{ fontSize: 13, marginBottom: 6 }}>Transcript Autopilot Options</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                {autopilotOptions.map((opt) => (
+                  <button
+                    key={opt.id}
+                    onClick={() => setSelectedAutopilotOptionId(opt.id)}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '6px 10px',
+                      borderRadius: 4,
+                      border: '1px solid',
+                      borderColor: selectedOption.id === opt.id ? '#58a9e8' : 'rgba(0,0,0,0.15)',
+                      background: selectedOption.id === opt.id ? 'rgba(88, 169, 232, 0.1)' : 'transparent',
+                      textAlign: 'left',
+                      cursor: 'pointer',
+                      color: 'inherit'
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 'bold', fontSize: 12 }}>{opt.profile.name}</div>
+                      <div style={{ fontSize: 10, opacity: 0.7 }}>{opt.cuts.length} cuts generated</div>
+                    </div>
+                    <span style={{
+                      fontWeight: 'bold',
+                      fontSize: 12,
+                      color: opt.score >= 90 ? '#69d59a' : opt.score >= 70 ? '#f0a13b' : '#ed7a13'
+                    }}>
+                      Score: {opt.score}%
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {selectedOption && (
+                <div style={{ background: 'rgba(0,0,0,0.03)', padding: 8, borderRadius: 4, marginBottom: 8 }}>
+                  <p style={{ fontSize: 11, margin: '0 0 6px 0', opacity: 0.8 }}>{selectedOption.profile.description}</p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {selectedOption.checks.map((chk, i) => (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10 }}>
+                        <span style={{ color: chk.pass ? '#69d59a' : '#ed7a13', fontWeight: 'bold' }}>
+                          {chk.pass ? '✓' : '✗'}
+                        </span>
+                        <strong>{chk.label}:</strong>
+                        <span style={{ opacity: 0.8 }}>{chk.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button
+                    className="rough-cut"
+                    style={{ marginTop: 8, width: '100%', padding: '6px 12px' }}
+                    onClick={() => applyAutopilot(selectedOption)}
+                    disabled={autoCutStatus === 'applying'}
+                  >
+                    <Sparkles size={14} /> {autoCutStatus === 'applying' ? 'Applying...' : `Apply Autopilot Cut (${selectedOption.cuts.length} cuts)`}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {autoCutStatus === 'done' && <div className="success"><Check size={16} />Created "{autoCutResult}". Open it in the Project panel.</div>}
+          {autoCutError && <div className="error"><AlertTriangle size={16} />{autoCutError}</div>}
+          <p className="safety"><Lock size={14} />Original sequence and audio stay untouched</p>
+        </section>
+      </main>
+    )
+  }

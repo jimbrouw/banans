@@ -1,4 +1,5 @@
 import { parseTranscriptFile } from './transcriptParse'
+import type { CutPoint, DetectedSources } from './cutEngine'
 import type { EditDecision, PremiereAdapter, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
 
 export const sequence: SequenceInfo = {
@@ -46,6 +47,27 @@ export class MockPremiereAdapter implements PremiereAdapter {
     await wait(900)
     return 'Episode 042 - Guest Interview - AI Rough Cut'
   }
+  async detectSources(): Promise<DetectedSources> {
+    await wait(200)
+    return {
+      sequenceId: 'seq-042',
+      fingerprint: '{"sequenceId":"seq-042","frameRate":29.97,"totalFrames":17982,"targetTrackIndex":3,"targetTrackItemCount":0,"sources":[]}',
+      sources: [
+        { vIndex: 0, camera: 1, name: 'cam1.mp4', mediaPath: '/mock/cam1.mp4', clipStartFrame: 0, clipInFrame: 0, clipOutFrame: 17982 },
+        { vIndex: 1, camera: 2, name: 'cam2.mp4', mediaPath: '/mock/cam2.mp4', clipStartFrame: 0, clipInFrame: 0, clipOutFrame: 17982 },
+        { vIndex: 2, camera: 3, name: 'cam3.mp4', mediaPath: '/mock/cam3.mp4', clipStartFrame: 0, clipInFrame: 0, clipOutFrame: 17982 },
+      ],
+      targetTrackIndex: 3,
+      totalFrames: 17982,
+      frameRate: 29.97,
+    }
+  }
+  async applyCutMap(sequenceId: string, cuts: CutPoint[], det: DetectedSources, endFrame: number) {
+    void sequenceId; void cuts; void det; void endFrame
+    await wait(500)
+    return 'Episode 042 - Guest Interview - Auto Cut'
+  }
 }
 
 export const premiere = new MockPremiereAdapter()
+
