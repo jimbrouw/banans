@@ -70,9 +70,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
     try {
       const projectItem = await sequence.getProjectItem()
       const clipItem = this.ppro.ClipProjectItem.cast(projectItem) as ClipProjectItem
-      if (!this.ppro.Transcript.hasTranscript(clipItem)) return []
       const json = await this.ppro.Transcript.exportToJSON(clipItem)
-      return normalizeTranscriptJson(json, 0)
+      return json ? normalizeTranscriptJson(json, 0) : []
     } catch {
       return []
     }
@@ -105,14 +104,14 @@ class UxpPremiereAdapter implements PremiereAdapter {
     try {
       const projectItem = await item.getProjectItem()
       const clipItem = this.ppro.ClipProjectItem.cast(projectItem) as ClipProjectItem
-      if (!this.ppro.Transcript.hasTranscript(clipItem)) return
+      const json = await this.ppro.Transcript.exportToJSON(clipItem)
+      if (!json) return
       const mediaPath = await clipItem.getMediaFilePath()
       const start = await item.getStartTime()
       const inPoint = await item.getInPoint()
       const key = `${mediaPath}:${start.seconds}:${inPoint.seconds}`
       if (seen.has(key)) return
       seen.add(key)
-      const json = await this.ppro.Transcript.exportToJSON(clipItem)
       output.push(...normalizeTranscriptJson(json, start.seconds - inPoint.seconds))
     } catch {
       // Graphics, adjustment layers, and unsupported project item types are skipped.
