@@ -67,6 +67,11 @@ export class MockPremiereAdapter implements PremiereAdapter {
     await wait(500)
     return 'Episode 042 - Guest Interview - Auto Cut'
   }
+  async assembleSocialSequence(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[], det: DetectedSources) {
+    void sequenceId; void decisions; void mappings; void det
+    await wait(500)
+    return 'Episode 042 - Guest Interview - Cold Open'
+  }
 }
 
 export const premiere = new MockPremiereAdapter()

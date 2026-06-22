@@ -10,6 +10,12 @@ const fillerPatterns = {
   high: /\b(um+|uh+|you know|i mean|kind of|sort of|basically|literally|like|i think,? i think|right,? right)\b/i,
 }
 
+const hookPatterns = [
+  /^(why|how|what|who|when|where|is|are|do|does|did|can|could|would|should|have|has|had)\b/i,
+  /\b(secret|mistake|lessons|reason|fact|hack|tip|strategy|trick|proven|shocking|crazy|unexpected)\b/i,
+  /^(you won't believe|i learned|most people|the truth about|how to)\b/i
+]
+
 function mergeTrimDecisions(decisions: Omit<EditDecision, 'selected'>[]) {
   const trims = decisions.filter((item) => item.type === 'suggested_trim').sort((a, b) => a.start - b.start)
   const others = decisions.filter((item) => item.type !== 'suggested_trim')
@@ -80,6 +86,10 @@ export async function analyseTranscript(transcript: TranscriptSegment[], setting
     }
     if (segmentDuration >= 20 && /\b(is|means|because|choice|mistake|lesson)\b/i.test(segment.text)) {
       candidates.push({ id: `quote-${segment.id}`, start: segment.start, end: segment.end, type: 'strong_quote', label: 'Strong quote', detail: summary(segment.text), confidence: Math.min(.93, segment.confidence) })
+    }
+    const isHook = hookPatterns.some((p) => p.test(segment.text.trim()))
+    if (segmentDuration >= 8 && segmentDuration <= 35 && isHook) {
+      candidates.push({ id: `hook-${segment.id}`, start: segment.start, end: segment.end, type: 'social_hook', label: `Inquisitive hook (${segment.speaker})`, detail: summary(segment.text), confidence: Math.min(.96, Math.max(.75, segment.confidence)) })
     }
   })
 

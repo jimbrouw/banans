@@ -16,6 +16,7 @@ const markerMeta: Record<MarkerType, { name: string; color: string; icon: typeof
   warning: { name: 'Warning', color: '#e5bd53', icon: AlertTriangle },
   strong_quote: { name: 'Quote', color: '#f0a13b', icon: Quote },
   camera_switch: { name: 'Camera', color: '#52cbc7', icon: Camera },
+  social_hook: { name: 'Hook', color: '#b57bed', icon: Sparkles },
 }
 
 const formatTime = (seconds: number) => new Date(seconds * 1000).toISOString().slice(11, 19)
@@ -145,6 +146,29 @@ export default function App() {
     }
   }
 
+  const assembleColdOpen = async () => {
+    if (!autoCutDet) {
+      setError('Please run "Detect Cameras" first in the Auto-Cut section so we know your camera offsets.')
+      return
+    }
+    const selectedHooks = selected.filter(d => d.type === 'social_hook')
+    if (selectedHooks.length === 0) {
+      setError('Please select at least one Inquisitive Hook in the results below.')
+      return
+    }
+    try {
+      setError('')
+      setStatus('creating')
+      const name = await premiere.assembleSocialSequence(sequence.id, selectedHooks, mappings, autoCutDet)
+      setAutoCutResult(name)
+      setAutoCutStatus('done')
+      setStatus('created')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      setStatus('error')
+    }
+  }
+
   const selectedOption = autopilotOptions.find(o => o.id === selectedAutopilotOptionId) || autopilotOptions[0]
 
 
@@ -194,8 +218,13 @@ export default function App() {
           <div className="marker-header"><h2>Proposed markers</h2><button className="text-button" onClick={() => setDecisions((current) => current.map((d) => ({ ...d, selected: true })))}>Select all</button></div>
           <div className="marker-list">{decisions.map((decision) => { const meta = markerMeta[decision.type]; const Icon = meta.icon; return <button className={`marker ${decision.selected ? 'selected' : ''}`} key={decision.id} onClick={() => setDecisions((current) => current.map((d) => d.id === decision.id ? { ...d, selected: !d.selected } : d))}><span className="marker-check">{decision.selected && <Check size={13} />}</span><i className="marker-line" style={{ background: meta.color }} /><Icon size={17} style={{ color: meta.color }} /><time>{formatTime(decision.start)}</time><span className="marker-copy"><strong>{decision.label}</strong><small>{decision.detail}</small></span><em style={{ color: meta.color }}>{Math.round(decision.confidence * 100)}%</em></button>})}</div>
           <button className="rough-cut" disabled={!selected.length || status === 'creating'} onClick={createRoughCut}><Sparkles size={19} />{status === 'creating' ? 'Building review cut...' : status === 'created' ? 'Marked review cut created' : `Create Marked Review Cut (${selected.length})`}</button>
+          {selected.some(d => d.type === 'social_hook') && (
+            <button className="rough-cut" style={{ marginTop: 8, background: '#b57bed' }} disabled={status === 'creating'} onClick={assembleColdOpen}>
+              <Sparkles size={19} />{status === 'creating' ? 'Assembling Cold Open...' : `Assemble YouTube Cold Open (${selected.filter(d => d.type === 'social_hook').length})`}
+            </button>
+          )}
           <p className="safety"><Lock size={14} /> Original sequence stays untouched</p>
-          {status === 'created' && <div className="success"><Check size={16} /> Created “{sequence.name} - AI Rough Cut” with {selected.length} markers.</div>}
+          {status === 'created' && <div className="success"><Check size={16} /> Action completed. Check the Project panel for your new sequence.</div>}
         </section>}
       </section>
 

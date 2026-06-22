@@ -47,4 +47,17 @@ describe('editorial decision engine', () => {
     expect(result.some((item) => item.label === 'Filler review')).toBe(true)
     expect(result.some((item) => item.label === 'Pause review')).toBe(true)
   })
+
+  it('detects inquisitive hooks in appropriate range', async () => {
+    vi.useFakeTimers()
+    const pending = analyseTranscript([
+      segment('1', 'Host', 0, 10, 'Why is this the most important rule of the secret recipe?')
+    ], { ...settings, cameraPlan: false })
+    await vi.advanceTimersByTimeAsync(450)
+    const result = await pending
+    vi.useRealTimers()
+    const hook = result.find((item) => item.type === 'social_hook')
+    expect(hook).toBeDefined()
+    expect(hook?.label).toBe('Inquisitive hook (Host)')
+  })
 })

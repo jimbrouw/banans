@@ -1,7 +1,7 @@
 export type { CameraSource, CutInterval, CutPoint, DetectedSources } from './cutEngine'
 import type { CutPoint, DetectedSources } from './cutEngine'
 
-export type MarkerType = 'social_clip' | 'chapter' | 'suggested_trim' | 'warning' | 'strong_quote' | 'camera_switch'
+export type MarkerType = 'social_clip' | 'chapter' | 'suggested_trim' | 'warning' | 'strong_quote' | 'camera_switch' | 'social_hook'
 
 export interface TranscriptSegment {
   id: string
@@ -56,4 +56,5 @@ export interface PremiereAdapter {
   createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[]): Promise<string>
   detectSources(): Promise<DetectedSources>
   applyCutMap(sequenceId: string, cuts: CutPoint[], det: DetectedSources, endFrame: number): Promise<string>
+  assembleSocialSequence(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[], det: DetectedSources): Promise<string>
 }

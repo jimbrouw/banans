@@ -469,6 +469,186 @@ class UxpPremiereAdapter implements PremiereAdapter {
 
     return cloneName
   }
+
+  async assembleSocialSequence(
+    sequenceId: string,
+    decisions: EditDecision[],
+    mappings: SpeakerMapping[],
+    det: DetectedSources
+  ): Promise<string> {
+    const { project, sequence } = await this.context()
+    const activeId = sequence.guid.toString()
+    if (activeId !== sequenceId) {
+      throw new Error('Active sequence changed. Re-detect before applying.')
+    }
+
+    const fr = this.ppro.FrameRate.createWithValue(det.frameRate)
+    const toTick = (frame: number) => this.frameToTick(frame, fr)
+
+    // 1. Resolve host clip objects by camera index
+    const clipMap = new Map<number, ClipProjectItem>()
+    for (const src of det.sources) {
+      const track = await sequence.getVideoTrack(src.vIndex)
+      const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+      if (items.length !== 1) {
+        throw new Error(`Timeline changed. Re-detect before applying.`)
+      }
+      const ti = items[0] as VideoClipTrackItem
+      const projItem = await ti.getProjectItem()
+      clipMap.set(src.camera, this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem)
+    }
+
+    // 2. Save original in/out points
+    const savedState = new Map<number, { inPoint: TickTime; outPoint: TickTime }>()
+    for (const [cam, clip] of clipMap) {
+      savedState.set(cam, {
+        inPoint: await clip.getInPoint(this.ppro.Constants.MediaType.VIDEO),
+        outPoint: await clip.getOutPoint(this.ppro.Constants.MediaType.VIDEO),
+      })
+    }
+
+    // 3. Clone sequence
+    const beforeGuids = new Set((await project.getSequences()).map(s => s.guid.toString()))
+    const cloneOk = project.executeTransaction(
+      (c) => c.addAction(sequence.createCloneAction()),
+      'RoughCut cold open clone',
+    )
+    if (!cloneOk) throw new Error('Premiere rejected the clone transaction.')
+
+    const clone = (await project.getSequences()).find(s => !beforeGuids.has(s.guid.toString()))
+    if (!clone) throw new Error('Clone completed but new sequence not found.')
+
+    // 4. Rename clone
+    const baseName = sequence.name.replace(/ - Cold Open( \d+)?$/, '')
+    const cloneName = `${baseName} - Cold Open`
+    const cloneItem = await clone.getProjectItem()
+    project.executeTransaction(
+      (c) => c.addAction(cloneItem.createSetNameAction(cloneName)),
+      'Rename cold open clone',
+    )
+
+    // 5. Clear target track on clone
+    const editor = await this.ppro.SequenceEditor.getEditor(clone)
+    if (det.targetTrackIndex < await clone.getVideoTrackCount()) {
+      const cloneTargetTrack = await clone.getVideoTrack(det.targetTrackIndex)
+      const existingItems = await cloneTargetTrack.getTrackItems(
+        this.ppro.Constants.TrackItemType.CLIP, false,
+      )
+      if (existingItems.length > 0) {
+        let clearSelection: Awaited<ReturnType<typeof clone.getSelection>> | null = null
+        this.ppro.TrackItemSelection.createEmptySelection((sel) => { clearSelection = sel })
+        if (!clearSelection) clearSelection = await clone.getSelection()
+        for (const item of existingItems) clearSelection!.addItem(item as VideoClipTrackItem)
+        project.lockedAccess(() => {
+          project.executeTransaction(
+            (c) => c.addAction(editor.createRemoveItemsAction(
+              clearSelection!, false, this.ppro.Constants.MediaType.VIDEO, false,
+            )),
+            'Clear target track',
+          )
+        })
+      }
+    }
+
+    const { resolveCameraNum } = await import('./autopilot')
+
+    const speakerToCamera = (speaker: string) => {
+      const m = mappings.find(item => item.speaker === speaker)
+      const sourcesList = det.sources.map(s => ({ camera: s.camera, name: s.name }))
+      const targetName = m ? m.camera : 'Wide'
+      return resolveCameraNum(targetName, sourcesList)
+    }
+
+    // 6. Write clips sequentially
+    try {
+      let currentStartFrame = 0
+      let isFirstClip = true
+
+      for (const dec of decisions) {
+        // Parse speaker out of inquisitive hook label: e.g. "Inquisitive hook (Host)"
+        const match = dec.label.match(/\(([^)]+)\)/)
+        const speakerName = match ? match[1] : 'Wide'
+        const camNum = speakerToCamera(speakerName)
+
+        const clip = clipMap.get(camNum)!
+        const srcInfo = det.sources.find(s => s.camera === camNum)!
+
+        // Map timeline seconds to frames
+        const startFrame = Math.round(dec.start * det.frameRate)
+        const endFrame = Math.round((dec.end ?? dec.start) * det.frameRate)
+        const duration = endFrame - startFrame
+        if (duration <= 0) continue
+
+        // Convert to source media frames
+        // sourceFrame = timelineFrame - clipStartFrame + clipInFrame
+        const sourceInFrame = startFrame - srcInfo.clipStartFrame + srcInfo.clipInFrame
+        const sourceOutFrame = endFrame - srcInfo.clipStartFrame + srcInfo.clipInFrame
+
+        // Set source in/out
+        const setOk = project.executeTransaction(
+          (c) => c.addAction(clip.createSetInOutPointsAction(
+            toTick(sourceInFrame),
+            toTick(sourceOutFrame),
+          )),
+          `Set hook in/out cam${camNum}`,
+        )
+        if (!setOk) throw new Error(`Premiere rejected in/out for camera ${camNum}.`)
+
+        // Get underlying project item for target track overwrite
+        const srcTrack = await sequence.getVideoTrack(srcInfo.vIndex)
+        const srcItems = await srcTrack.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+        const projItem = await (srcItems[0] as VideoClipTrackItem).getProjectItem()
+
+        project.lockedAccess(() => {
+          if (isFirstClip && det.targetTrackIndex >= (clone as unknown as { getVideoTrackCount(): number }).getVideoTrackCount?.() || false) {
+            project.executeTransaction(
+              (c) => c.addAction(editor.createInsertProjectItemAction(
+                projItem, toTick(currentStartFrame), det.targetTrackIndex, -1, true,
+              )),
+              `Insert hook cam${camNum} @${currentStartFrame}`,
+            )
+          } else {
+            project.executeTransaction(
+              (c) => c.addAction(editor.createOverwriteItemAction(
+                projItem, toTick(currentStartFrame), det.targetTrackIndex, -1,
+              )),
+              `Overwrite hook cam${camNum} @${currentStartFrame}`,
+            )
+          }
+          isFirstClip = false
+        })
+
+        currentStartFrame += duration
+      }
+    } finally {
+      // 7. Restore source in/out points
+      const restoreFailures: string[] = []
+      for (const [cam, clip] of clipMap) {
+        const saved = savedState.get(cam)!
+        try {
+          const ok = project.executeTransaction(
+            (c) => c.addAction(clip.createSetInOutPointsAction(saved.inPoint, saved.outPoint)),
+            `Restore in/out cam${cam}`,
+          )
+          if (!ok) restoreFailures.push(`Camera ${cam}: transaction rejected`)
+        } catch (e) {
+          restoreFailures.push(`Camera ${cam}: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      if (restoreFailures.length > 0) {
+        throw new Error(
+          `Auto-cut FAILED: could not restore original source in/out points.\n` +
+          `Affected cameras:\n${restoreFailures.map(f => `  • ${f}`).join('\n')}\n` +
+          `Check these clips in the Source Monitor and reset their in/out points manually.`,
+        )
+      }
+    }
+
+    // 8. Activate the clone
+    await project.setActiveSequence(clone)
+
+    return cloneName
+  }
 }
 
 export function createPremiereAdapter(): PremiereAdapter {
