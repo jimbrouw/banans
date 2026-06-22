@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, Camera, Check, ChevronDown, Clapperboard, Film, Lock, Play, Quote, Scissors, Sparkles } from 'lucide-react'
+import { AlertTriangle, Camera, Check, ChevronDown, Clapperboard, FileText, Film, Lock, Play, Quote, Scissors, Sparkles } from 'lucide-react'
 import { analyseTranscript } from './analyse'
 import { sequence as demoSequence } from './mockPremiere'
 import { isPremiereHost, premiere } from './premiereAdapter'
-import type { AnalysisSettings, EditDecision, MarkerType, SequenceInfo, SpeakerMapping } from './types'
+import type { AnalysisSettings, EditDecision, MarkerType, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
 import './App.css'
 
 const markerMeta: Record<MarkerType, { name: string; color: string; icon: typeof Sparkles }> = {
@@ -38,18 +38,23 @@ export default function App() {
       .catch((reason: unknown) => { setError(reason instanceof Error ? reason.message : String(reason)); setStatus('error') })
   }, [])
 
-  const runAnalysis = async () => {
+  const analyseSegments = async (transcript: TranscriptSegment[]) => {
+    const speakers = [...new Set(transcript.map((segment) => segment.speaker))]
+    const resolvedMappings = speakers.map((speaker, index) => mappings.find((mapping) => mapping.speaker === speaker) ?? { speaker, camera: index === 0 ? 'Camera 1' : index === 1 ? 'Camera 2' : 'Wide' })
+    setMappings(resolvedMappings)
+    const nextDecisions = await analyseTranscript(transcript, settings, resolvedMappings)
+    if (!nextDecisions.length) throw new Error('No decisions matched the current analysis settings. Lower the confidence threshold or minimum clip length.')
+    setDecisions(nextDecisions)
+    setStatus('results')
+  }
+
+  const runAnalysis = async (loadFromFile = false) => {
     try {
       setError('')
       setStatus('analysing')
-      const transcript = await premiere.getTranscript(sequence.id)
-      const speakers = [...new Set(transcript.map((segment) => segment.speaker))]
-      const resolvedMappings = speakers.map((speaker, index) => mappings.find((mapping) => mapping.speaker === speaker) ?? { speaker, camera: index === 0 ? 'Camera 1' : index === 1 ? 'Camera 2' : 'Wide' })
-      setMappings(resolvedMappings)
-      const nextDecisions = await analyseTranscript(transcript, settings, resolvedMappings)
-      if (!nextDecisions.length) throw new Error('No decisions matched the current analysis settings. Lower the confidence threshold or minimum clip length.')
-      setDecisions(nextDecisions)
-      setStatus('results')
+      const transcript = loadFromFile ? await premiere.importTranscriptFile() : await premiere.getTranscript(sequence.id)
+      if (!transcript.length) { setStatus(decisions.length ? 'results' : 'ready'); return }
+      await analyseSegments(transcript)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
       setStatus('error')
@@ -106,7 +111,8 @@ export default function App() {
             <label>Minimum shot <select value={settings.minimumShotSeconds} onChange={(e) => patchSettings({ minimumShotSeconds: Number(e.target.value) })}><option value="1.5">1.5s</option><option value="2.5">2.5s</option><option value="4">4.0s</option></select></label>
             <label>Filler scan <select value={settings.fillerAggressiveness} onChange={(e) => patchSettings({ fillerAggressiveness: e.target.value as AnalysisSettings['fillerAggressiveness'] })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
           </div>
-          <button className="primary" onClick={runAnalysis} disabled={status === 'loading' || status === 'analysing' || status === 'creating'}><Play size={17} fill="currentColor" />{status === 'loading' ? 'Connecting to Premiere...' : status === 'analysing' ? 'Analysing transcript...' : decisions.length ? 'Analyse again' : 'Analyse transcript'}</button>
+          <button className="primary" onClick={() => runAnalysis()} disabled={status === 'loading' || status === 'analysing' || status === 'creating'}><Play size={17} fill="currentColor" />{status === 'loading' ? 'Connecting to Premiere...' : status === 'analysing' ? 'Analysing transcript...' : decisions.length ? 'Analyse again' : 'Analyse transcript'}</button>
+          <button className="text-button file-import" onClick={() => runAnalysis(true)} disabled={status === 'loading' || status === 'analysing' || status === 'creating'}><FileText size={15} /> Load transcript file</button>
           {error && <div className="error"><AlertTriangle size={16} />{error}</div>}
         </section>
 

@@ -31,12 +31,14 @@ button:focus-visible, select:focus-visible { outline: 2px solid #f2a04e; outline
   min-height: 100vh;
   padding: 30px 24px;
   background: #101415;
-  display: grid;
-  place-items: start center;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
 }
 
 .panel {
-  width: min(100%, 540px);
+  width: 100%;
+  max-width: 540px;
   background: var(--base);
   border: 1px solid #343d3f;
   border-radius: 14px;
@@ -184,7 +186,7 @@ select:hover { border-color: #465153; }
 .error { margin-top: 12px; padding: 10px; border: 1px solid rgba(229, 189, 83, .38); background: #282315; color: #e5bd53; border-radius: 7px; font-size: 11px; display: flex; align-items: flex-start; gap: 7px; line-height: 1.4; }
 
 @media (max-width: 580px) {
-  .app-shell { padding: 0; place-items: start stretch; }
+  .app-shell { padding: 0; }
   .panel { width: 100%; min-height: 100vh; border: 0; border-radius: 0; box-shadow: none; }
   .section, header { padding-left: 18px; padding-right: 18px; }
   .mapping { grid-template-columns: 10px 74px 1fr 112px; }

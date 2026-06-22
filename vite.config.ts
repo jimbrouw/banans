@@ -8,6 +8,7 @@ export default defineConfig({
   build: {
     target: 'es2018',
     outDir: 'plugin-dist',
+    emptyOutDir: false,
     modulePreload: false,
     rollupOptions: {
       output: {

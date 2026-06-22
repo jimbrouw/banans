@@ -1,3 +1,4 @@
+import { parseTranscriptFile } from './transcriptParse'
 import type { EditDecision, PremiereAdapter, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
 
 export const sequence: SequenceInfo = {
@@ -20,9 +21,25 @@ export const transcript: TranscriptSegment[] = [
 
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
+const pickBrowserFile = () => new Promise<File | undefined>((resolve) => {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.prtranscript,.json,.csv,.srt,.txt'
+  input.onchange = () => resolve(input.files?.[0])
+  input.oncancel = () => resolve(undefined)
+  input.click()
+})
+
 export class MockPremiereAdapter implements PremiereAdapter {
   async getActiveSequence() { await wait(100); return sequence }
   async getTranscript(sequenceId: string) { void sequenceId; await wait(180); return transcript }
+  async importTranscriptFile() {
+    const file = await pickBrowserFile()
+    if (!file) return []
+    const segments = parseTranscriptFile(await file.text(), file.name)
+    if (!segments.length) throw new Error('That file did not contain a readable transcript.')
+    return segments.sort((a, b) => a.start - b.start)
+  }
   async addMarkers(sequenceId: string, decisions: EditDecision[]) { void sequenceId; void decisions; await wait(550) }
   async createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[]) {
     void sequenceId; void decisions; void mappings

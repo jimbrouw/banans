@@ -1,13 +1,26 @@
 import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
+import * as ReactDOM from 'react-dom'
 import './index.css'
 import App from './App.tsx'
 import { registerUxpEntrypoints } from './hostRuntime'
 
-registerUxpEntrypoints()
+let mounted = false
+const renderApp = () => {
+  if (mounted) return
+  let container = document.getElementById('root')
+  if (!container) {
+    container = document.createElement('div')
+    container.id = 'root'
+    document.body.appendChild(container)
+  }
+  mounted = true
+  ReactDOM.render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+    container,
+  )
+}
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-)
+registerUxpEntrypoints(renderApp)
+renderApp()
