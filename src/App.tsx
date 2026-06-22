@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { AlertTriangle, Camera, Check, ChevronDown, Clapperboard, FileText, Film, Lock, Play, Quote, Scissors, Sparkles } from 'lucide-react'
 import { analyseTranscript } from './analyse'
 import { sequence as demoSequence } from './mockPremiere'
@@ -23,7 +24,12 @@ const formatTime = (seconds: number) => new Date(seconds * 1000).toISOString().s
 const cameras = ['Camera 1', 'Camera 2', 'Wide']
 
 function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void }) {
-  return <button className={`toggle ${checked ? 'on' : ''}`} onClick={onChange} aria-pressed={checked}><span /></button>
+  return <span className={`toggle ${checked ? 'on' : ''}`} role="switch" aria-checked={checked} tabIndex={0} onClick={onChange}><span className="toggle-knob" /></span>
+}
+
+// UXP paints native chrome over <button> backgrounds, so render clickables as styleable spans.
+function Press({ className = '', onClick, disabled = false, style, children }: { className?: string; onClick?: () => void; disabled?: boolean; style?: CSSProperties; children: ReactNode }) {
+  return <span role="button" tabIndex={disabled ? -1 : 0} aria-disabled={disabled} className={`${className}${disabled ? ' is-disabled' : ''}`} style={style} onClick={() => { if (!disabled) onClick?.() }}>{children}</span>
 }
 
 export default function App() {
@@ -179,12 +185,12 @@ export default function App() {
 
         <section className="section sequence-section">
           <div className="section-title"><h2>Active sequence</h2><span className="live-dot">Connected</span></div>
-          <button className="sequence-row"><Film size={20} /><strong>{sequence.name}</strong><ChevronDown size={17} /></button>
+          <Press className="sequence-row"><Film size={20} /><strong>{sequence.name}</strong><ChevronDown size={17} /></Press>
           <div className="transcript-row"><span className="check-icon"><Check size={14} /></span><strong>{status === 'loading' ? 'Connecting...' : 'Sequence ready'}</strong><span>{Math.floor(sequence.duration / 60)}:{String(sequence.duration % 60).padStart(2, '0')}{sequence.transcriptCoverage ? ` · ${sequence.transcriptCoverage}% demo coverage` : ''}</span></div>
         </section>
 
         <section className="section">
-          <div className="section-title"><h2>Speaker mapping</h2><button className="text-button">Auto-detect</button></div>
+          <div className="section-title"><h2>Speaker mapping</h2><Press className="text-button">Auto-detect</Press></div>
           <div className="mapping-list">
             {mappings.map((mapping, index) => <div className="mapping" key={mapping.speaker}><span className="speaker-dot" style={{ background: index ? '#52cbc7' : '#58a9e8' }} /><strong>{mapping.speaker}</strong><span className="maps-to">maps to</span><select value={mapping.camera} onChange={(e) => updateMapping(mapping.speaker, e.target.value)}>{cameras.map((camera) => <option key={camera}>{camera}</option>)}</select></div>)}
             <div className="mapping"><span className="speaker-dot wide" /><strong>Fallback</strong><span className="maps-to">uses</span><select defaultValue="Wide">{cameras.map((camera) => <option key={camera}>{camera}</option>)}</select></div>
@@ -207,36 +213,35 @@ export default function App() {
             <label>Minimum shot <select value={settings.minimumShotSeconds} onChange={(e) => patchSettings({ minimumShotSeconds: Number(e.target.value) })}><option value="1.5">1.5s</option><option value="2.5">2.5s</option><option value="4">4.0s</option></select></label>
             <label>Filler scan <select value={settings.fillerAggressiveness} onChange={(e) => patchSettings({ fillerAggressiveness: e.target.value as AnalysisSettings['fillerAggressiveness'] })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
           </div>
-          <button className="primary" onClick={() => runAnalysis()} disabled={status === 'loading' || status === 'analysing' || status === 'creating'}><Play size={17} fill="currentColor" />{status === 'loading' ? 'Connecting to Premiere...' : status === 'analysing' ? 'Analysing transcript...' : decisions.length ? 'Analyse again' : 'Analyse transcript'}</button>
-          <button className="text-button file-import" onClick={() => runAnalysis(true)} disabled={status === 'loading' || status === 'analysing' || status === 'creating'}><FileText size={15} /> Load transcript file</button>
+          <Press className="primary" onClick={() => runAnalysis()} disabled={status === 'loading' || status === 'analysing' || status === 'creating'}><Play size={17} fill="currentColor" />{status === 'loading' ? 'Connecting to Premiere...' : status === 'analysing' ? 'Analysing transcript...' : decisions.length ? 'Analyse again' : 'Analyse transcript'}</Press>
+          <Press className="text-button file-import" onClick={() => runAnalysis(true)} disabled={status === 'loading' || status === 'analysing' || status === 'creating'}><FileText size={15} /> Load transcript file</Press>
           {error && <div className="error"><AlertTriangle size={16} />{error}</div>}
         </section>
 
         {decisions.length > 0 && <section className="section results">
           <div className="result-heading"><div className="score">{Math.round(decisions.reduce((sum, d) => sum + d.confidence, 0) / decisions.length * 100)}%</div><div><h2>{decisions.length} edit decisions</h2><p>{selected.length} selected for write-back</p></div></div>
           <div className="count-row">{counts.map(({ type, count }) => <span key={type}><i style={{ background: markerMeta[type].color }} />{count} {markerMeta[type].name}</span>)}</div>
-          <div className="marker-header"><h2>Proposed markers</h2><button className="text-button" onClick={() => setDecisions((current) => current.map((d) => ({ ...d, selected: true })))}>Select all</button></div>
-          <div className="marker-list">{decisions.map((decision) => { const meta = markerMeta[decision.type]; const Icon = meta.icon; return <button className={`marker ${decision.selected ? 'selected' : ''}`} key={decision.id} onClick={() => setDecisions((current) => current.map((d) => d.id === decision.id ? { ...d, selected: !d.selected } : d))}><span className="marker-check">{decision.selected && <Check size={13} />}</span><i className="marker-line" style={{ background: meta.color }} /><Icon size={17} style={{ color: meta.color }} /><time>{formatTime(decision.start)}</time><span className="marker-copy"><strong>{decision.label}</strong><small>{decision.detail}</small></span><em style={{ color: meta.color }}>{Math.round(decision.confidence * 100)}%</em></button>})}</div>
-          <button className="rough-cut" disabled={!selected.length || status === 'creating'} onClick={createRoughCut}><Sparkles size={19} />{status === 'creating' ? 'Building review cut...' : status === 'created' ? 'Marked review cut created' : `Create Marked Review Cut (${selected.length})`}</button>
+          <div className="marker-header"><h2>Proposed markers</h2><Press className="text-button" onClick={() => setDecisions((current) => current.map((d) => ({ ...d, selected: true })))}>Select all</Press></div>
+          <div className="marker-list">{decisions.map((decision) => { const meta = markerMeta[decision.type]; const Icon = meta.icon; return <Press className={`marker ${decision.selected ? 'selected' : ''}`} key={decision.id} onClick={() => setDecisions((current) => current.map((d) => d.id === decision.id ? { ...d, selected: !d.selected } : d))}><span className="marker-check">{decision.selected && <Check size={13} />}</span><i className="marker-line" style={{ background: meta.color }} /><Icon size={17} style={{ color: meta.color }} /><time>{formatTime(decision.start)}</time><span className="marker-copy"><strong>{decision.label}</strong><small>{decision.detail}</small></span><em style={{ color: meta.color }}>{Math.round(decision.confidence * 100)}%</em></Press>})}</div>
+          <Press className="rough-cut" disabled={!selected.length || status === 'creating'} onClick={createRoughCut}><Sparkles size={19} />{status === 'creating' ? 'Building review cut...' : status === 'created' ? 'Marked review cut created' : `Create Marked Review Cut (${selected.length})`}</Press>
           {selected.some(d => d.type === 'social_hook') && (
-            <button className="rough-cut" style={{ marginTop: 8, background: '#b57bed' }} disabled={status === 'creating'} onClick={assembleColdOpen}>
+            <Press className="rough-cut" style={{ marginTop: 8, backgroundColor: '#b57bed', color: '#fff' }} disabled={status === 'creating'} onClick={assembleColdOpen}>
               <Sparkles size={19} />{status === 'creating' ? 'Assembling Cold Open...' : `Assemble YouTube Cold Open (${selected.filter(d => d.type === 'social_hook').length})`}
-            </button>
+            </Press>
           )}
           <p className="safety"><Lock size={14} /> Original sequence stays untouched</p>
           {status === 'created' && <div className="success"><Check size={16} /> Action completed. Check the Project panel for your new sequence.</div>}
         </section>}
-      </section>
 
         <section className="section">
           <div className="section-title"><h2>Auto-Cut Engine</h2><span className="hint">Phase 2 · Autopilot</span></div>
           <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-            <button className="primary" onClick={detectCameras} disabled={autoCutStatus === 'detecting' || autoCutStatus === 'applying'} style={{ flex: 1 }}>
+            <Press className="primary" onClick={detectCameras} disabled={autoCutStatus === 'detecting' || autoCutStatus === 'applying'} style={{ flex: 1 }}>
               <Camera size={17} />{autoCutStatus === 'detecting' ? 'Detecting...' : 'Detect Cameras'}
-            </button>
-            <button className="primary" onClick={testAutoCut} disabled={!autoCutDet || autoCutStatus === 'applying'} style={{ flex: 1 }}>
+            </Press>
+            <Press className="primary" onClick={testAutoCut} disabled={!autoCutDet || autoCutStatus === 'applying'} style={{ flex: 1 }}>
               <Scissors size={17} />{autoCutStatus === 'applying' ? 'Applying...' : 'Test Auto-Cut'}
-            </button>
+            </Press>
           </div>
           {autoCutDet && autoCutStatus !== 'error' && <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>
             {autoCutDet.sources.length} cameras detected · {autoCutDet.frameRate} fps · {autoCutDet.totalFrames} frames · target V{autoCutDet.targetTrackIndex + 1}
@@ -244,22 +249,22 @@ export default function App() {
           </div>}
 
           {autopilotOptions.length > 0 && (
-            <div className="autopilot-section" style={{ borderTop: '1px solid rgba(0,0,0,0.1)', paddingTop: 10, marginTop: 10 }}>
-              <h3 style={{ fontSize: 13, marginBottom: 6 }}>Transcript Autopilot Options</h3>
+            <div className="autopilot-section">
+              <h3 style={{ fontSize: 13 }}>Transcript Autopilot Options</h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
                 {autopilotOptions.map((opt) => (
-                  <button
+                  <Press
                     key={opt.id}
                     onClick={() => setSelectedAutopilotOptionId(opt.id)}
                     style={{
                       display: 'flex',
                       justifyContent: 'space-between',
                       alignItems: 'center',
-                      padding: '6px 10px',
-                      borderRadius: 4,
+                      padding: '8px 11px',
+                      borderRadius: 7,
                       border: '1px solid',
-                      borderColor: selectedOption.id === opt.id ? '#58a9e8' : 'rgba(0,0,0,0.15)',
-                      background: selectedOption.id === opt.id ? 'rgba(88, 169, 232, 0.1)' : 'transparent',
+                      borderColor: selectedOption.id === opt.id ? '#58a9e8' : '#343d3f',
+                      backgroundColor: selectedOption.id === opt.id ? 'rgba(88, 169, 232, 0.12)' : '#121719',
                       textAlign: 'left',
                       cursor: 'pointer',
                       color: 'inherit'
@@ -276,12 +281,12 @@ export default function App() {
                     }}>
                       Score: {opt.score}%
                     </span>
-                  </button>
+                  </Press>
                 ))}
               </div>
 
               {selectedOption && (
-                <div style={{ background: 'rgba(0,0,0,0.03)', padding: 8, borderRadius: 4, marginBottom: 8 }}>
+                <div style={{ backgroundColor: '#121719', border: '1px solid #2a3133', padding: 10, borderRadius: 7, marginBottom: 8 }}>
                   <p style={{ fontSize: 11, margin: '0 0 6px 0', opacity: 0.8 }}>{selectedOption.profile.description}</p>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                     {selectedOption.checks.map((chk, i) => (
@@ -295,14 +300,14 @@ export default function App() {
                     ))}
                   </div>
 
-                  <button
+                  <Press
                     className="rough-cut"
-                    style={{ marginTop: 8, width: '100%', padding: '6px 12px' }}
+                    style={{ marginTop: 8, width: '100%' }}
                     onClick={() => applyAutopilot(selectedOption)}
                     disabled={autoCutStatus === 'applying'}
                   >
                     <Sparkles size={14} /> {autoCutStatus === 'applying' ? 'Applying...' : `Apply Autopilot Cut (${selectedOption.cuts.length} cuts)`}
-                  </button>
+                  </Press>
                 </div>
               )}
             </div>
@@ -312,6 +317,7 @@ export default function App() {
           {autoCutError && <div className="error"><AlertTriangle size={16} />{autoCutError}</div>}
           <p className="safety"><Lock size={14} />Original sequence and audio stay untouched</p>
         </section>
-      </main>
-    )
-  }
+      </section>
+    </main>
+  )
+}
