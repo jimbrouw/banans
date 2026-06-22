@@ -44,19 +44,38 @@ class UxpPremiereAdapter implements PremiereAdapter {
   }
 
   async getTranscript(sequenceId: string): Promise<TranscriptSegment[]> {
+    void sequenceId
     const { sequence } = await this.context()
-    if (sequence.guid.toString() !== sequenceId) throw new Error('The active sequence changed. Refresh RoughCut and try again.')
+
+    // Strategy 1: the sequence's own transcript (Premiere "Transcribe Sequence").
+    // A sequence is itself a ClipProjectItem, so attempt a direct read first —
+    // this is the zero-friction path that needs no export from the Text panel.
+    const sequenceTranscript = await this.collectSequenceTranscript(sequence)
+    if (sequenceTranscript.length) return sequenceTranscript.sort((a, b) => a.start - b.start)
+
+    // Strategy 2: transcripts attached to the source clips on the timeline.
     const seen = new Set<string>()
     const segments: TranscriptSegment[] = []
-
     for (let trackIndex = 0; trackIndex < await sequence.getVideoTrackCount(); trackIndex += 1) {
       const track = await sequence.getVideoTrack(trackIndex)
       const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
       for (const item of items) await this.collectItemTranscript(item, seen, segments)
     }
+    if (segments.length) return segments.sort((a, b) => a.start - b.start)
 
-    if (!segments.length) throw new Error('No source-clip transcript was found on the active sequence. Transcribe its source clips in Premiere, or use "Load transcript file" to import a transcript exported from the Text panel.')
-    return segments.sort((a, b) => a.start - b.start)
+    throw new Error('No transcript was found on the active sequence. Transcribe the sequence (or its source clips) in Premiere’s Text panel, or use "Load transcript file" to import a CSV exported from that panel.')
+  }
+
+  private async collectSequenceTranscript(sequence: Sequence): Promise<TranscriptSegment[]> {
+    try {
+      const projectItem = await sequence.getProjectItem()
+      const clipItem = this.ppro.ClipProjectItem.cast(projectItem) as ClipProjectItem
+      if (!this.ppro.Transcript.hasTranscript(clipItem)) return []
+      const json = await this.ppro.Transcript.exportToJSON(clipItem)
+      return normalizeTranscriptJson(json, 0)
+    } catch {
+      return []
+    }
   }
 
   async importTranscriptFile(): Promise<TranscriptSegment[]> {
