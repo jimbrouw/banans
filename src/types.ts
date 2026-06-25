@@ -1,7 +1,8 @@
 export type { CameraSource, CutInterval, CutPoint, DetectedSources } from './cutEngine'
 import type { CutPoint, DetectedSources } from './cutEngine'
 
-export type MarkerType = 'social_clip' | 'chapter' | 'suggested_trim' | 'warning' | 'strong_quote' | 'camera_switch' | 'social_hook'
+export type MarkerType = 'social_clip' | 'chapter' | 'suggested_trim' | 'warning' | 'strong_quote' | 'camera_switch' | 'social_hook' | 'audiogram'
+export type Platform = 'shorts' | 'reels' | 'tiktok' | 'stories' | 'audiogram'
 
 export interface TranscriptSegment {
   id: string
@@ -21,6 +22,8 @@ export interface EditDecision {
   detail: string
   confidence: number
   selected: boolean
+  selfContainedScore?: number
+  platforms?: Platform[]
 }
 
 export interface SpeakerMapping {

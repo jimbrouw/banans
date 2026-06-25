@@ -1,4 +1,4 @@
-import type { AnalysisSettings, EditDecision, SpeakerMapping, TranscriptSegment } from './types'
+import type { AnalysisSettings, EditDecision, Platform, SpeakerMapping, TranscriptSegment } from './types'
 
 const summary = (text: string) => text.length > 58 ? `${text.slice(0, 55).trim()}...` : text
 const duration = (segment: TranscriptSegment) => Math.max(0, segment.end - segment.start)
@@ -8,6 +8,30 @@ const fillerPatterns = {
   low: /\b(um+|uh+)\b/i,
   medium: /\b(um+|uh+|you know|i mean|i think,? i think|right,? right)\b/i,
   high: /\b(um+|uh+|you know|i mean|kind of|sort of|basically|literally|like|i think,? i think|right,? right)\b/i,
+}
+
+const dependencyPhrases = /\b(as I (said|mentioned)|going back to|like (I|we) (said|discussed)|earlier (I|we)|we (talked|spoke) about|that'?s what I meant)\b/i
+const visualDependency = /\b(look at (this|that)|as you can see|on (the|this) (screen|slide|chart|graph|diagram)|this (image|picture|photo))\b/i
+const payoffPhrases = /\b(because|that'?s why|the point is|what I (found|learned|realized)|the key (is|takeaway)|the bottom line|in other words)\b/i
+
+function selfContainedScore(text: string, durationSec: number): number {
+  let score = 0
+  if (durationSec >= 15 && durationSec <= 60) score += 0.3
+  else if (durationSec >= 10) score += 0.1
+  if (payoffPhrases.test(text)) score += 0.2
+  if (!dependencyPhrases.test(text)) score += 0.2
+  if (!visualDependency.test(text)) score += 0.15
+  const firstSentence = text.split(/[.!?]/)[0]
+  if (hookPatterns.some((p) => p.test(firstSentence))) score += 0.15
+  return Math.min(1, score)
+}
+
+function derivePlatforms(durationSec: number, type: string): Platform[] {
+  if (type === 'audiogram') return ['audiogram']
+  if (durationSec <= 15) return ['stories']
+  if (durationSec <= 45) return ['shorts', 'reels', 'tiktok', 'stories']
+  if (durationSec <= 60) return ['shorts', 'reels', 'tiktok']
+  return []
 }
 
 const hookPatterns = [
@@ -67,7 +91,8 @@ export async function analyseTranscript(transcript: TranscriptSegment[], setting
   ordered.forEach((segment, index) => {
     const segmentDuration = duration(segment)
     if (settings.socialClips && segmentDuration >= settings.minimumClipSeconds && segment.text.length >= 60) {
-      candidates.push({ id: `social-${segment.id}`, start: segment.start, end: segment.end, type: 'social_clip', label: 'Strong clip', detail: summary(segment.text), confidence: Math.min(.96, Math.max(.72, segment.confidence)) })
+      const sc = selfContainedScore(segment.text, segmentDuration)
+      candidates.push({ id: `social-${segment.id}`, start: segment.start, end: segment.end, type: 'social_clip', label: 'Strong clip', detail: summary(segment.text), confidence: Math.min(.96, Math.max(.72, segment.confidence)), selfContainedScore: sc, platforms: derivePlatforms(segmentDuration, 'social_clip') })
     }
     if (settings.chapters && (index === 0 || (index > 0 && index % Math.max(2, Math.floor(ordered.length / 3)) === 0))) {
       candidates.push({ id: `chapter-${segment.id}`, start: segment.start, type: 'chapter', label: 'Chapter', detail: summary(segment.text), confidence: Math.min(.94, segment.confidence) })
@@ -89,7 +114,13 @@ export async function analyseTranscript(transcript: TranscriptSegment[], setting
     }
     const isHook = hookPatterns.some((p) => p.test(segment.text.trim()))
     if (segmentDuration >= 8 && segmentDuration <= 35 && isHook) {
-      candidates.push({ id: `hook-${segment.id}`, start: segment.start, end: segment.end, type: 'social_hook', label: `Inquisitive hook (${segment.speaker})`, detail: summary(segment.text), confidence: Math.min(.96, Math.max(.75, segment.confidence)) })
+      candidates.push({ id: `hook-${segment.id}`, start: segment.start, end: segment.end, type: 'social_hook', label: `Inquisitive hook (${segment.speaker})`, detail: summary(segment.text), confidence: Math.min(.96, Math.max(.75, segment.confidence)), selfContainedScore: selfContainedScore(segment.text, segmentDuration), platforms: derivePlatforms(segmentDuration, 'social_hook') })
+    }
+    if (settings.socialClips && segmentDuration >= 15 && segmentDuration <= 45 && segment.confidence >= 0.75 && !visualDependency.test(segment.text)) {
+      const isInsightful = /\b(is|means|because|mistake|lesson|truth|key|difference|problem|solution|important|reality)\b/i.test(segment.text)
+      if (isInsightful) {
+        candidates.push({ id: `audiogram-${segment.id}`, start: segment.start, end: segment.end, type: 'audiogram', label: 'Audiogram candidate', detail: summary(segment.text), confidence: Math.min(.92, segment.confidence), selfContainedScore: selfContainedScore(segment.text, segmentDuration), platforms: ['audiogram'] })
+      }
     }
   })
 

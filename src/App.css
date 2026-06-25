@@ -172,6 +172,8 @@ select:hover { border-color: #465153; }
 .result-heading { display: flex; align-items: center; gap: 13px; }
 .result-heading h2 { font-size: 16px; }
 .result-heading p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+.promo-counts { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0; font-size: 11px; }
+.export-btn { margin-left: auto; display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .score { width: 52px; height: 52px; flex-shrink: 0; border: 4px solid var(--amber); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; background-color: var(--surface-low); box-shadow: var(--raised-small), inset 2px 2px 5px rgba(0, 0, 0, .4); }
 .count-row { display: flex; gap: 14px; flex-wrap: wrap; margin: 17px 0 20px; color: #adb3b3; font-size: 10px; }
 .count-row span { display: flex; align-items: center; gap: 5px; }
@@ -191,6 +193,10 @@ select:hover { border-color: #465153; }
 .marker-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; overflow: hidden; }
 .marker-copy strong { font-size: 11px; }
 .marker-copy small { color: #92999a; font-size: 10px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.marker-plats { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.clip-dur { font-size: 10px; color: var(--muted); }
+.plat-badge { font-size: 9px; font-weight: 700; letter-spacing: .04em; border: 1px solid; border-radius: 3px; padding: 1px 4px; }
+.sc-score { font-size: 9px; color: var(--muted); letter-spacing: .02em; }
 .marker em { width: 36px; flex-shrink: 0; text-align: right; font-style: normal; font-size: 11px; }
 
 .rough-cut { margin-top: 15px; color: #ffd1a3; border: 1px solid #b95708; background-color: #181d1f; box-shadow: var(--raised-small), inset 0 1px rgba(255, 255, 255, .03); }

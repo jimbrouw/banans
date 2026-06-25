@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import { AlertTriangle, Camera, Check, ChevronDown, Clapperboard, FileText, Film, Lock, Play, Quote, Scissors, Sparkles } from 'lucide-react'
+import { AlertTriangle, Camera, Check, ChevronDown, Clapperboard, Download, FileText, Film, Lock, Mic, Play, Quote, Scissors, Sparkles } from 'lucide-react'
 import { analyseTranscript } from './analyse'
 import { sequence as demoSequence } from './mockPremiere'
 import { isPremiereHost, premiere } from './premiereAdapter'
-import type { AnalysisSettings, EditDecision, MarkerType, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
+import type { AnalysisSettings, EditDecision, MarkerType, Platform, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
 import type { CutPoint, DetectedSources } from './cutEngine'
 import { getAutopilotOptions } from './autopilot'
 import type { AutopilotOption } from './autopilot'
@@ -18,9 +18,14 @@ const markerMeta: Record<MarkerType, { name: string; color: string; icon: typeof
   strong_quote: { name: 'Quote', color: '#f0a13b', icon: Quote },
   camera_switch: { name: 'Camera', color: '#52cbc7', icon: Camera },
   social_hook: { name: 'Hook', color: '#b57bed', icon: Sparkles },
+  audiogram: { name: 'Audiogram', color: '#52cbc7', icon: Mic },
 }
 
+const platformLabel: Record<Platform, string> = { shorts: 'YT', reels: 'IG', tiktok: 'TT', stories: 'Story', audiogram: 'Audio' }
+const platformColor: Record<Platform, string> = { shorts: '#c4302b', reels: '#c837ab', tiktok: '#00c8c8', stories: '#f77737', audiogram: '#52cbc7' }
+
 const formatTime = (seconds: number) => new Date(seconds * 1000).toISOString().slice(11, 19)
+const formatDuration = (start: number, end?: number) => { if (!end) return ''; const s = Math.round(end - start); return s >= 60 ? `${Math.floor(s / 60)}m${s % 60}s` : `${s}s` }
 const cameras = ['Camera 1', 'Camera 2', 'Wide']
 
 function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void }) {
@@ -47,6 +52,35 @@ export default function App() {
   const [selectedAutopilotOptionId, setSelectedAutopilotOptionId] = useState<string | null>(null)
   const selected = decisions.filter((d) => d.selected)
   const counts = useMemo(() => Object.keys(markerMeta).map((type) => ({ type: type as MarkerType, count: decisions.filter((d) => d.type === type).length })).filter((x) => x.count), [decisions])
+  const promoSummary = useMemo(() => ({
+    shorts: decisions.filter((d) => d.platforms?.includes('shorts')).length,
+    stories: decisions.filter((d) => d.platforms?.includes('stories') && !d.platforms?.includes('shorts')).length,
+    audiograms: decisions.filter((d) => d.type === 'audiogram').length,
+  }), [decisions])
+
+  const exportPromoMap = () => {
+    const promoTypes: MarkerType[] = ['social_clip', 'social_hook', 'audiogram']
+    const clips = decisions.filter((d) => promoTypes.includes(d.type))
+    const map = clips.map((d, i) => ({
+      clip: String(i + 1).padStart(2, '0'),
+      start: formatTime(d.start),
+      end: d.end ? formatTime(d.end) : '',
+      duration: formatDuration(d.start, d.end),
+      idea: d.detail,
+      type: d.type,
+      platforms: d.platforms ?? [],
+      selfContainedScore: d.selfContainedScore !== undefined ? `${Math.round(d.selfContainedScore * 100)}%` : '',
+      versions: d.type === 'audiogram' ? ['audiogram'] : ['clean', 'captioned'],
+      status: d.selected ? 'selected' : 'deselected',
+    }))
+    try {
+      const blob = new Blob([JSON.stringify(map, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = `${sequence.name.replace(/\s+/g, '-')}-promo-map.json`; a.click()
+      URL.revokeObjectURL(url)
+    } catch { /* UXP file API not available in this context */ }
+  }
 
   useEffect(() => {
     premiere.getActiveSequence()
@@ -219,10 +253,42 @@ export default function App() {
         </section>
 
         {decisions.length > 0 && <section className="section results">
-          <div className="result-heading"><div className="score">{Math.round(decisions.reduce((sum, d) => sum + d.confidence, 0) / decisions.length * 100)}%</div><div><h2>{decisions.length} edit decisions</h2><p>{selected.length} selected for write-back</p></div></div>
+          <div className="result-heading">
+            <div className="score">{Math.round(decisions.reduce((sum, d) => sum + d.confidence, 0) / decisions.length * 100)}%</div>
+            <div>
+              <h2>Promo Package</h2>
+              <p className="promo-counts">
+                {promoSummary.shorts > 0 && <span style={{ color: '#69d59a' }}>{promoSummary.shorts} Shorts</span>}
+                {promoSummary.stories > 0 && <span style={{ color: '#f0a13b' }}>{promoSummary.stories} Stories</span>}
+                {promoSummary.audiograms > 0 && <span style={{ color: '#52cbc7' }}>{promoSummary.audiograms} Audiograms</span>}
+                <span style={{ color: 'var(--muted)' }}>{decisions.filter(d => !d.platforms?.length).length} markers</span>
+              </p>
+            </div>
+            <Press className="text-button export-btn" onClick={exportPromoMap}><Download size={13} /> Export</Press>
+          </div>
           <div className="count-row">{counts.map(({ type, count }) => <span key={type}><i style={{ background: markerMeta[type].color }} />{count} {markerMeta[type].name}</span>)}</div>
           <div className="marker-header"><h2>Proposed markers</h2><Press className="text-button" onClick={() => setDecisions((current) => current.map((d) => ({ ...d, selected: true })))}>Select all</Press></div>
-          <div className="marker-list">{decisions.map((decision) => { const meta = markerMeta[decision.type]; const Icon = meta.icon; return <Press className={`marker ${decision.selected ? 'selected' : ''}`} key={decision.id} onClick={() => setDecisions((current) => current.map((d) => d.id === decision.id ? { ...d, selected: !d.selected } : d))}><span className="marker-check">{decision.selected && <Check size={13} />}</span><i className="marker-line" style={{ background: meta.color }} /><Icon size={17} style={{ color: meta.color }} /><time>{formatTime(decision.start)}</time><span className="marker-copy"><strong>{decision.label}</strong><small>{decision.detail}</small></span><em style={{ color: meta.color }}>{Math.round(decision.confidence * 100)}%</em></Press>})}</div>
+          <div className="marker-list">{decisions.map((decision) => {
+            const meta = markerMeta[decision.type]; const Icon = meta.icon
+            const dur = formatDuration(decision.start, decision.end)
+            const hasPromoMeta = decision.platforms && decision.platforms.length > 0
+            return <Press className={`marker ${decision.selected ? 'selected' : ''}`} key={decision.id} onClick={() => setDecisions((current) => current.map((d) => d.id === decision.id ? { ...d, selected: !d.selected } : d))}>
+              <span className="marker-check">{decision.selected && <Check size={13} />}</span>
+              <i className="marker-line" style={{ background: meta.color }} />
+              <Icon size={17} style={{ color: meta.color }} />
+              <time>{formatTime(decision.start)}</time>
+              <span className="marker-copy">
+                <strong>{decision.label}</strong>
+                <small>{decision.detail}</small>
+                {hasPromoMeta && <span className="marker-plats">
+                  {dur && <span className="clip-dur">{dur}</span>}
+                  {decision.platforms!.map((p) => <span key={p} className="plat-badge" style={{ color: platformColor[p], borderColor: platformColor[p] }}>{platformLabel[p]}</span>)}
+                  {decision.selfContainedScore !== undefined && <span className="sc-score" style={{ color: decision.selfContainedScore >= 0.7 ? '#69d59a' : 'var(--muted)' }}>SC {Math.round(decision.selfContainedScore * 100)}</span>}
+                </span>}
+              </span>
+              <em style={{ color: meta.color }}>{Math.round(decision.confidence * 100)}%</em>
+            </Press>
+          })}</div>
           <Press className="rough-cut" disabled={!selected.length || status === 'creating'} onClick={createRoughCut}><Sparkles size={19} />{status === 'creating' ? 'Building review cut...' : status === 'created' ? 'Marked review cut created' : `Create Marked Review Cut (${selected.length})`}</Press>
           {selected.some(d => d.type === 'social_hook') && (
             <Press className="rough-cut" style={{ marginTop: 8, backgroundColor: '#b57bed', color: '#fff' }} disabled={status === 'creating'} onClick={assembleColdOpen}>
