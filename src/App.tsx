@@ -50,8 +50,18 @@ export default function App() {
   const [autoCutError, setAutoCutError] = useState('')
   const [autoCutResult, setAutoCutResult] = useState('')
   const [selectedAutopilotOptionId, setSelectedAutopilotOptionId] = useState<string | null>(null)
+  const [markerFilter, setMarkerFilter] = useState<'all' | 'promo' | 'shorts' | 'audio' | 'trims'>('all')
+  const [sortBest, setSortBest] = useState(false)
   const selected = decisions.filter((d) => d.selected)
   const counts = useMemo(() => Object.keys(markerMeta).map((type) => ({ type: type as MarkerType, count: decisions.filter((d) => d.type === type).length })).filter((x) => x.count), [decisions])
+  const filteredDecisions = useMemo(() => {
+    let list = decisions
+    if (markerFilter === 'promo') list = decisions.filter((d) => ['social_clip', 'social_hook', 'audiogram'].includes(d.type))
+    else if (markerFilter === 'shorts') list = decisions.filter((d) => d.platforms?.includes('shorts'))
+    else if (markerFilter === 'audio') list = decisions.filter((d) => d.type === 'audiogram')
+    else if (markerFilter === 'trims') list = decisions.filter((d) => d.type === 'suggested_trim')
+    return sortBest ? [...list].sort((a, b) => (b.selfContainedScore ?? b.confidence) - (a.selfContainedScore ?? a.confidence)) : list
+  }, [decisions, markerFilter, sortBest])
   const promoSummary = useMemo(() => ({
     shorts: decisions.filter((d) => d.platforms?.includes('shorts')).length,
     stories: decisions.filter((d) => d.platforms?.includes('stories') && !d.platforms?.includes('shorts')).length,
@@ -268,7 +278,16 @@ export default function App() {
           </div>
           <div className="count-row">{counts.map(({ type, count }) => <span key={type}><i style={{ background: markerMeta[type].color }} />{count} {markerMeta[type].name}</span>)}</div>
           <div className="marker-header"><h2>Proposed markers</h2><Press className="text-button" onClick={() => setDecisions((current) => current.map((d) => ({ ...d, selected: true })))}>Select all</Press></div>
-          <div className="marker-list">{decisions.map((decision) => {
+          <div className="filter-bar">
+            {(['all', 'promo', 'shorts', 'audio', 'trims'] as const).map((f) => {
+              const labels = { all: 'All', promo: 'Promo', shorts: 'Shorts', audio: 'Audio', trims: 'Trims' }
+              const tabCounts = { all: decisions.length, promo: decisions.filter((d) => ['social_clip','social_hook','audiogram'].includes(d.type)).length, shorts: decisions.filter((d) => d.platforms?.includes('shorts')).length, audio: decisions.filter((d) => d.type === 'audiogram').length, trims: decisions.filter((d) => d.type === 'suggested_trim').length }
+              return <Press key={f} className={`filter-tab${markerFilter === f ? ' active' : ''}`} onClick={() => setMarkerFilter(f)}>{labels[f]} <span className="filter-count">{tabCounts[f]}</span></Press>
+            })}
+            <Press className={`filter-tab sort-tab${sortBest ? ' active' : ''}`} onClick={() => setSortBest((v) => !v)}>Best ↑</Press>
+          </div>
+          <div className="filter-showing">{filteredDecisions.length}{filteredDecisions.length < decisions.length ? ` of ${decisions.length}` : ''} markers{sortBest ? ' · ranked' : ''}</div>
+          <div className="marker-list">{filteredDecisions.map((decision) => {
             const meta = markerMeta[decision.type]; const Icon = meta.icon
             const dur = formatDuration(decision.start, decision.end)
             const hasPromoMeta = decision.platforms && decision.platforms.length > 0
