@@ -126,8 +126,9 @@ export function validateDetectedSources(
 ): void {
   if (sources.length < 2) {
     throw new Error(
-      `Need at least 2 camera tracks (found ${sources.length}). ` +
-      `Stack one camera per video track starting from V1.`,
+      sources.length === 0
+        ? `Auto-Cut found no camera tracks. Make sure you have the original multi-camera source sequence open — each video track should contain exactly one full-length camera clip. If you are on an already-edited rough cut, switch back to the source sequence first.`
+        : `Auto-Cut found only 1 camera track. At least 2 are needed. Stack one camera per video track starting from V1 in the source sequence.`,
     )
   }
 

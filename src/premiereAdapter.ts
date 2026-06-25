@@ -136,15 +136,21 @@ class UxpPremiereAdapter implements PremiereAdapter {
   }
 
   private async writeMarkers(project: Project, sequence: Sequence, decisions: EditDecision[], undoLabel: string) {
+    // Premiere's scripting engine fails with large single transactions ("script object no longer valid").
+    // Batch into chunks so each transaction stays well within limits.
+    const BATCH = 20
     const markers = await this.ppro.Markers.getMarkers(sequence)
-    const committed = project.executeTransaction((compound) => {
-      for (const decision of decisions) {
-        const start = this.ppro.TickTime.createWithSeconds(decision.start)
-        const duration = this.ppro.TickTime.createWithSeconds(Math.max(0, (decision.end ?? decision.start) - decision.start))
-        compound.addAction(markers.createAddMarkerAction(decision.label, markerType(decision), start, duration, `${decision.detail} | RoughCut confidence ${Math.round(decision.confidence * 100)}%`))
-      }
-    }, undoLabel)
-    if (!committed) throw new Error('Premiere rejected the marker transaction.')
+    for (let i = 0; i < decisions.length; i += BATCH) {
+      const batch = decisions.slice(i, i + BATCH)
+      const committed = project.executeTransaction((compound) => {
+        for (const decision of batch) {
+          const start = this.ppro.TickTime.createWithSeconds(decision.start)
+          const dur = this.ppro.TickTime.createWithSeconds(Math.max(0, (decision.end ?? decision.start) - decision.start))
+          compound.addAction(markers.createAddMarkerAction(decision.label, markerType(decision), start, dur, `${decision.detail} | RoughCut confidence ${Math.round(decision.confidence * 100)}%`))
+        }
+      }, undoLabel)
+      if (!committed) throw new Error(`Premiere rejected marker batch ${Math.floor(i / BATCH) + 1} of ${Math.ceil(decisions.length / BATCH)}.`)
+    }
   }
 
   async createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[]): Promise<string> {
