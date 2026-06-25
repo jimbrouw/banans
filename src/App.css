@@ -185,8 +185,10 @@ select:hover { border-color: #465153; }
 .filter-tab.active { border-color: var(--amber); color: var(--amber); background-color: rgba(237, 122, 19, .1); }
 .filter-tab:hover:not(.active) { border-color: #465153; color: var(--text); }
 .filter-count { font-weight: 400; opacity: .7; }
-.sort-tab.active { border-color: #69d59a; color: #69d59a; background-color: rgba(105, 213, 154, .1); }
-.filter-showing { font-size: 10px; color: var(--dim); margin-bottom: 7px; }
+.marker-col-header { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 5px; }
+.col-clip { font-size: 10px; color: var(--dim); letter-spacing: .04em; text-transform: uppercase; }
+.col-score { font-size: 10px; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
+.col-score.sorted { color: var(--amber); }
 .marker-list { border: 1px solid #343d3f; border-radius: 8px; overflow: hidden; max-height: 310px; overflow-y: auto; background-color: var(--surface-low); box-shadow: var(--inset); }
 .marker { position: relative; width: 100%; min-height: 58px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 0; border-bottom: 1px solid #30383a; background-color: rgba(27, 33, 35, .62); text-align: left; cursor: pointer; }
 .marker:last-child { border-bottom: 0; }

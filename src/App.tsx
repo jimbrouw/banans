@@ -282,11 +282,13 @@ export default function App() {
             {(['all', 'promo', 'shorts', 'audio', 'trims'] as const).map((f) => {
               const labels = { all: 'All', promo: 'Promo', shorts: 'Shorts', audio: 'Audio', trims: 'Trims' }
               const tabCounts = { all: decisions.length, promo: decisions.filter((d) => ['social_clip','social_hook','audiogram'].includes(d.type)).length, shorts: decisions.filter((d) => d.platforms?.includes('shorts')).length, audio: decisions.filter((d) => d.type === 'audiogram').length, trims: decisions.filter((d) => d.type === 'suggested_trim').length }
-              return <Press key={f} className={`filter-tab${markerFilter === f ? ' active' : ''}`} onClick={() => setMarkerFilter(f)}>{labels[f]} <span className="filter-count">{tabCounts[f]}</span></Press>
+              return <Press key={f} className={`filter-tab${markerFilter === f ? ' active' : ''}`} onClick={() => { setMarkerFilter(f); if (f === 'promo') setSortBest(true) }}>{labels[f]} <span className="filter-count">{tabCounts[f]}</span></Press>
             })}
-            <Press className={`filter-tab sort-tab${sortBest ? ' active' : ''}`} onClick={() => setSortBest((v) => !v)}>Best ↑</Press>
           </div>
-          <div className="filter-showing">{filteredDecisions.length}{filteredDecisions.length < decisions.length ? ` of ${decisions.length}` : ''} markers{sortBest ? ' · ranked' : ''}</div>
+          <div className="marker-col-header">
+            <span className="col-clip">Clip</span>
+            <Press className={`col-score${sortBest ? ' sorted' : ''}`} onClick={() => setSortBest((v) => !v)}>Score {sortBest ? '↓' : '↕'}</Press>
+          </div>
           <div className="marker-list">{filteredDecisions.map((decision) => {
             const meta = markerMeta[decision.type]; const Icon = meta.icon
             const dur = formatDuration(decision.start, decision.end)
