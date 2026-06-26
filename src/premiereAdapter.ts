@@ -193,6 +193,17 @@ class UxpPremiereAdapter implements PremiereAdapter {
     return this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
   }
 
+  /**
+   * Re-fetch a live Sequence handle by guid. UXP invalidates Sequence objects
+   * across each transaction (BANANAS E4); re-finding by stable guid right before
+   * use guarantees the handle backing a create*Action call is current.
+   */
+  private async findSequenceByGuid(project: Project, guid: string): Promise<Sequence> {
+    const seq = (await project.getSequences()).find(s => s.guid.toString() === guid)
+    if (!seq) throw new Error('Sequence no longer exists. Re-detect before applying.')
+    return seq
+  }
+
   async detectSources(): Promise<DetectedSources> {
     const { sequence } = await this.context()
     const sequenceId = sequence.guid.toString()
@@ -301,228 +312,249 @@ class UxpPremiereAdapter implements PremiereAdapter {
     det: DetectedSources,
     endFrame: number,
   ): Promise<string> {
-    // 1. Validate sequence identity.
-    let { project, sequence } = await this.context()
-    const activeId = sequence.guid.toString()
-    if (activeId !== sequenceId) {
-      throw new Error('Active sequence changed. Re-detect before applying.')
-    }
-    if (sequenceId !== det.sequenceId) {
-      throw new Error('Detection was for a different sequence. Re-detect before applying.')
-    }
-
-    const fr = this.ppro.FrameRate.createWithValue(det.frameRate)
-    const toTick = (frame: number) => this.frameToTick(frame, fr)
-
-    // 2. Re-detect and verify fingerprint. Resolve host objects by track index.
-    const clipMap = new Map<number, ClipProjectItem>()
-    for (const src of det.sources) {
-      const track = await sequence.getVideoTrack(src.vIndex)
-      const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
-      if (items.length !== 1) {
-        throw new Error(
-          `Timeline changed: V${src.vIndex + 1} now has ${items.length} clips (expected 1). Re-detect before applying.`,
-        )
-      }
-      const ti = items[0] as VideoClipTrackItem
-      const projItem = await ti.getProjectItem()
-      const clip = this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
-
-      // Verify media path matches.
-      const currentPath = await clip.getMediaFilePath()
-      if (currentPath !== src.mediaPath) {
-        throw new Error(
-          `Timeline changed: V${src.vIndex + 1} media path changed. Re-detect before applying.`,
-        )
-      }
-
-      // Verify timing matches.
-      const startFrame = this.tickToFrame(await ti.getStartTime(), fr)
-      const inFrame = this.tickToFrame(await ti.getInPoint(), fr)
-      const outFrame = this.tickToFrame(await ti.getOutPoint(), fr)
-      if (startFrame !== src.clipStartFrame || inFrame !== src.clipInFrame || outFrame !== src.clipOutFrame) {
-        throw new Error(
-          `Timeline changed: V${src.vIndex + 1} timing differs from detection. Re-detect before applying.`,
-        )
-      }
-
-      clipMap.set(src.camera, clip)
-    }
-
-    // Verify target track item count.
-    const targetTrack = await sequence.getVideoTrack(det.targetTrackIndex).catch(() => null)
-    const targetItems = targetTrack
-      ? await targetTrack.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
-      : []
-    const currentFingerprint = buildDetectionFingerprint(
-      sequenceId, det.frameRate, det.totalFrames,
-      det.targetTrackIndex, targetItems.length, det.sources,
-    )
-    if (currentFingerprint !== det.fingerprint) {
-      throw new Error('Timeline changed since detection. Re-detect before applying.')
-    }
-
-    // 3. Normalize and validate cuts.
-    const normalized = normalizeCutMap(cuts, endFrame, det.sources.length)
-
-    // 4. Build intervals (validates coverage — rejects on any gap).
-    const intervals = buildCutIntervals(normalized, endFrame, det.sources)
-
-    // 5. Save original in/out points as raw tick strings.
-    // Storing TickTime objects would also go stale across the clone; the string
-    // is plain data that rebuilds an exact handle later via createWithTicks.
-    const savedState = new Map<number, { inTicks: string; outTicks: string }>()
-    for (const [cam, clip] of clipMap) {
-      const inP = await clip.getInPoint(this.ppro.Constants.MediaType.VIDEO)
-      const outP = await clip.getOutPoint(this.ppro.Constants.MediaType.VIDEO)
-      savedState.set(cam, { inTicks: inP.ticks, outTicks: outP.ticks })
-    }
-
-    // 6. Clone sequence.
-    // Re-fetch context: the read phase above has many awaits and Premiere's DOM objects
-    // go stale across them, causing "script object is no longer valid" on transactions.
-    ;({ project, sequence } = await this.context())
-    if (sequence.guid.toString() !== sequenceId) throw new Error('Active sequence changed. Re-detect before applying.')
-    const beforeGuids = new Set((await project.getSequences()).map(s => s.guid.toString()))
-    const cloneOk = project.executeTransaction(
-      (c) => c.addAction(sequence.createCloneAction()),
-      'RoughCut auto-cut clone',
-    )
-    if (!cloneOk) throw new Error('Premiere rejected the clone transaction.')
-
-    const clone = (await project.getSequences()).find(s => !beforeGuids.has(s.guid.toString()))
-    if (!clone) throw new Error('Clone completed but new sequence not found.')
-
-    // Rename the clone.
-    const baseName = sequence.name.replace(/ - Auto Cut( \d+)?$/, '')
-    const cloneName = `${baseName} - Auto Cut`
-    const cloneItem = await clone.getProjectItem()
-    const renameOk = project.executeTransaction(
-      (c) => c.addAction(cloneItem.createSetNameAction(cloneName)),
-      'Rename auto-cut clone',
-    )
-    if (!renameOk) throw new Error('Premiere rejected the rename transaction.')
-
-    // 7. Clear target track on clone (if items exist).
-    const editor = await this.ppro.SequenceEditor.getEditor(clone)
-    if (det.targetTrackIndex < await clone.getVideoTrackCount()) {
-      const cloneTargetTrack = await clone.getVideoTrack(det.targetTrackIndex)
-      const existingItems = await cloneTargetTrack.getTrackItems(
-        this.ppro.Constants.TrackItemType.CLIP, false,
-      )
-      if (existingItems.length > 0) {
-        let clearSelection: Awaited<ReturnType<typeof clone.getSelection>> | null = null
-        this.ppro.TrackItemSelection.createEmptySelection((sel) => { clearSelection = sel })
-        if (!clearSelection) {
-          // Fallback: use sequence selection.
-          clearSelection = await clone.getSelection()
-        }
-        for (const item of existingItems) clearSelection!.addItem(item as VideoClipTrackItem)
-        project.lockedAccess(() => {
-          const removeOk = project.executeTransaction(
-            (c) => c.addAction(editor.createRemoveItemsAction(
-              clearSelection!, false, this.ppro.Constants.MediaType.VIDEO, false,
-            )),
-            'Clear target track',
-          )
-          if (!removeOk) throw new Error('Premiere rejected the clear-track transaction.')
-        })
-      }
-    }
-
-    // 8. Write cut intervals.
-    // Re-fetch again — editor/track-clear operations above span multiple awaits
-    // that can stale project and sequence references in UXP.
-    ;({ project, sequence } = await this.context())
-    if (sequence.guid.toString() !== sequenceId) throw new Error('Active sequence changed. Re-detect before applying.')
-
-    // Pre-compute before the loop — getVideoTrackCount() is async and cannot be
-    // awaited inside the synchronous lockedAccess callback.
-    const cloneTrackCount = await clone.getVideoTrackCount()
-    const useInsertForFirstClip = det.targetTrackIndex >= cloneTrackCount
-
+    let phase = 'init'
     try {
-      let isFirstClip = true
-      for (const iv of intervals) {
-        // Re-query the source clip fresh every iteration. The pre-clone clipMap
-        // handles are stale here (BANANAS E4); use one fresh handle for both the
-        // in/out set and the overwrite so they reference the same live object.
-        const srcTrack = await sequence.getVideoTrack(
-          det.sources.find(s => s.camera === iv.camera)!.vIndex,
-        )
-        const srcItems = await srcTrack.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
-        const projItem = await (srcItems[0] as VideoClipTrackItem).getProjectItem()
+      // 1. Validate sequence identity.
+      phase = 'fetch active project/sequence'
+      let { project, sequence } = await this.context()
+      const activeId = sequence.guid.toString()
+      if (activeId !== sequenceId) {
+        throw new Error('Active sequence changed. Re-detect before applying.')
+      }
+      if (sequenceId !== det.sequenceId) {
+        throw new Error('Detection was for a different sequence. Re-detect before applying.')
+      }
+
+      const fr = this.ppro.FrameRate.createWithValue(det.frameRate)
+      const toTick = (frame: number) => this.frameToTick(frame, fr)
+
+      // 2. Re-detect and verify fingerprint. Resolve host objects by track index.
+      phase = 'verify camera tracks'
+      const clipMap = new Map<number, ClipProjectItem>()
+      for (const src of det.sources) {
+        const track = await sequence.getVideoTrack(src.vIndex)
+        const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+        if (items.length !== 1) {
+          throw new Error(
+            `Timeline changed: V${src.vIndex + 1} now has ${items.length} clips (expected 1). Re-detect before applying.`,
+          )
+        }
+        const ti = items[0] as VideoClipTrackItem
+        const projItem = await ti.getProjectItem()
         const clip = this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
 
-        // Step 1: Set source in/out range.
-        const setOk = project.executeTransaction(
-          (c) => c.addAction(clip.createSetInOutPointsAction(
-            toTick(iv.sourceInFrame),
-            toTick(iv.sourceOutFrame),
-          )),
-          `Set in/out cam${iv.camera}`,
-        )
-        if (!setOk) throw new Error(`Premiere rejected in/out for camera ${iv.camera}.`)
-
-        // Step 2: Place on target track (video-only, audioTrackIndex = -1).
-        project.lockedAccess(() => {
-          if (isFirstClip && useInsertForFirstClip) {
-            // Target track doesn't exist yet — use insert so Premiere auto-creates it.
-            const insertOk = project.executeTransaction(
-              (c) => c.addAction(editor.createInsertProjectItemAction(
-                projItem, toTick(iv.startFrame), det.targetTrackIndex, -1, true,
-              )),
-              `Insert cam${iv.camera} @${iv.startFrame}`,
-            )
-            if (!insertOk) throw new Error(`Premiere rejected insert for camera ${iv.camera} at frame ${iv.startFrame}.`)
-          } else {
-            const writeOk = project.executeTransaction(
-              (c) => c.addAction(editor.createOverwriteItemAction(
-                projItem, toTick(iv.startFrame), det.targetTrackIndex, -1,
-              )),
-              `Overwrite cam${iv.camera} @${iv.startFrame}`,
-            )
-            if (!writeOk) throw new Error(`Premiere rejected overwrite for camera ${iv.camera} at frame ${iv.startFrame}.`)
-          }
-          isFirstClip = false
-        })
-      }
-    } finally {
-      // 9. Restore source in/out points. Always runs.
-      // Re-fetch context and fresh clip handles — every handle from before the
-      // cut transactions is stale here (BANANAS E4).
-      const restoreFailures: string[] = []
-      const { project: rp, sequence: rs } = await this.context()
-      for (const src of det.sources) {
-        const saved = savedState.get(src.camera)
-        if (!saved) continue
-        try {
-          const freshClip = await this.freshSourceClip(rs, src.vIndex)
-          const ok = rp.executeTransaction(
-            (c) => c.addAction(freshClip.createSetInOutPointsAction(
-              this.ppro.TickTime.createWithTicks(saved.inTicks),
-              this.ppro.TickTime.createWithTicks(saved.outTicks),
-            )),
-            `Restore in/out cam${src.camera}`,
+        // Verify media path matches.
+        const currentPath = await clip.getMediaFilePath()
+        if (currentPath !== src.mediaPath) {
+          throw new Error(
+            `Timeline changed: V${src.vIndex + 1} media path changed. Re-detect before applying.`,
           )
-          if (!ok) restoreFailures.push(`Camera ${src.camera}: transaction rejected`)
-        } catch (e) {
-          restoreFailures.push(`Camera ${src.camera}: ${e instanceof Error ? e.message : String(e)}`)
+        }
+
+        // Verify timing matches.
+        const startFrame = this.tickToFrame(await ti.getStartTime(), fr)
+        const inFrame = this.tickToFrame(await ti.getInPoint(), fr)
+        const outFrame = this.tickToFrame(await ti.getOutPoint(), fr)
+        if (startFrame !== src.clipStartFrame || inFrame !== src.clipInFrame || outFrame !== src.clipOutFrame) {
+          throw new Error(
+            `Timeline changed: V${src.vIndex + 1} timing differs from detection. Re-detect before applying.`,
+          )
+        }
+
+        clipMap.set(src.camera, clip)
+      }
+
+      // Verify target track item count.
+      phase = 'fingerprint check'
+      const targetTrack = await sequence.getVideoTrack(det.targetTrackIndex).catch(() => null)
+      const targetItems = targetTrack
+        ? await targetTrack.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+        : []
+      const currentFingerprint = buildDetectionFingerprint(
+        sequenceId, det.frameRate, det.totalFrames,
+        det.targetTrackIndex, targetItems.length, det.sources,
+      )
+      if (currentFingerprint !== det.fingerprint) {
+        throw new Error('Timeline changed since detection. Re-detect before applying.')
+      }
+
+      // 3. Normalize and validate cuts.
+      const normalized = normalizeCutMap(cuts, endFrame, det.sources.length)
+
+      // 4. Build intervals (validates coverage — rejects on any gap).
+      const intervals = buildCutIntervals(normalized, endFrame, det.sources)
+
+      // 5. Save original in/out points as raw tick strings.
+      // Storing TickTime objects would also go stale across the clone; the string
+      // is plain data that rebuilds an exact handle later via createWithTicks.
+      phase = 'save original in/out'
+      const savedState = new Map<number, { inTicks: string; outTicks: string }>()
+      for (const [cam, clip] of clipMap) {
+        const inP = await clip.getInPoint(this.ppro.Constants.MediaType.VIDEO)
+        const outP = await clip.getOutPoint(this.ppro.Constants.MediaType.VIDEO)
+        savedState.set(cam, { inTicks: inP.ticks, outTicks: outP.ticks })
+      }
+
+      // 6. Clone sequence.
+      phase = 'clone sequence'
+      ;({ project, sequence } = await this.context())
+      if (sequence.guid.toString() !== sequenceId) throw new Error('Active sequence changed. Re-detect before applying.')
+      const beforeGuids = new Set((await project.getSequences()).map(s => s.guid.toString()))
+      const cloneOk = project.executeTransaction(
+        (c) => c.addAction(sequence.createCloneAction()),
+        'RoughCut auto-cut clone',
+      )
+      if (!cloneOk) throw new Error('Premiere rejected the clone transaction.')
+
+      const cloneRef = (await project.getSequences()).find(s => !beforeGuids.has(s.guid.toString()))
+      if (!cloneRef) throw new Error('Clone completed but new sequence not found.')
+      const cloneId = cloneRef.guid.toString()
+
+      // Rename the clone.
+      phase = 'rename clone'
+      const baseName = sequence.name.replace(/ - Auto Cut( \d+)?$/, '')
+      const cloneName = `${baseName} - Auto Cut`
+      const cloneItem = await cloneRef.getProjectItem()
+      const renameOk = project.executeTransaction(
+        (c) => c.addAction(cloneItem.createSetNameAction(cloneName)),
+        'Rename auto-cut clone',
+      )
+      if (!renameOk) throw new Error('Premiere rejected the rename transaction.')
+
+      // 7. Clear target track on clone (if items exist).
+      phase = 'clear target track'
+      const clearClone = await this.findSequenceByGuid(project, cloneId)
+      if (det.targetTrackIndex < await clearClone.getVideoTrackCount()) {
+        const cloneTargetTrack = await clearClone.getVideoTrack(det.targetTrackIndex)
+        const existingItems = await cloneTargetTrack.getTrackItems(
+          this.ppro.Constants.TrackItemType.CLIP, false,
+        )
+        if (existingItems.length > 0) {
+          const clearEditor = await this.ppro.SequenceEditor.getEditor(clearClone)
+          let clearSelection: Awaited<ReturnType<typeof clearClone.getSelection>> | null = null
+          this.ppro.TrackItemSelection.createEmptySelection((sel) => { clearSelection = sel })
+          if (!clearSelection) {
+            // Fallback: use sequence selection.
+            clearSelection = await clearClone.getSelection()
+          }
+          for (const item of existingItems) clearSelection!.addItem(item as VideoClipTrackItem)
+          project.lockedAccess(() => {
+            const removeOk = project.executeTransaction(
+              (c) => c.addAction(clearEditor.createRemoveItemsAction(
+                clearSelection!, false, this.ppro.Constants.MediaType.VIDEO, false,
+              )),
+              'Clear target track',
+            )
+            if (!removeOk) throw new Error('Premiere rejected the clear-track transaction.')
+          })
         }
       }
-      if (restoreFailures.length > 0) {
-        throw new Error(
-          `Auto-cut FAILED: could not restore original source in/out points.\n` +
-          `Affected cameras:\n${restoreFailures.map(f => `  • ${f}`).join('\n')}\n` +
-          `Check these clips in the Source Monitor and reset their in/out points manually.`,
-        )
+
+      // 8. Write cut intervals.
+      // Decide insert-vs-overwrite once: does the target track already exist on the clone?
+      const cloneTrackCount = await (await this.findSequenceByGuid(project, cloneId)).getVideoTrackCount()
+      const useInsertForFirstClip = det.targetTrackIndex >= cloneTrackCount
+
+      try {
+        let isFirstClip = true
+        for (const iv of intervals) {
+          phase = `write cut cam${iv.camera} @${iv.startFrame}`
+          // Re-fetch EVERY live handle right before use — UXP invalidates project,
+          // sequence, editor, and clip handles across each preceding transaction
+          // (BANANAS E4). Re-find by guid so a stale Sequence object never leaks in.
+          const srcSeq = await this.findSequenceByGuid(project, sequenceId)
+          const srcTrack = await srcSeq.getVideoTrack(
+            det.sources.find(s => s.camera === iv.camera)!.vIndex,
+          )
+          const srcItems = await srcTrack.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+          const projItem = await (srcItems[0] as VideoClipTrackItem).getProjectItem()
+          const clip = this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
+
+          // Step 1: Set source in/out range.
+          const setOk = project.executeTransaction(
+            (c) => c.addAction(clip.createSetInOutPointsAction(
+              toTick(iv.sourceInFrame),
+              toTick(iv.sourceOutFrame),
+            )),
+            `Set in/out cam${iv.camera}`,
+          )
+          if (!setOk) throw new Error(`Premiere rejected in/out for camera ${iv.camera}.`)
+
+          // Step 2: Place on target track. Re-fetch the clone's editor AFTER the
+          // setInOut transaction above — that transaction stales the prior editor.
+          const placeEditor = await this.ppro.SequenceEditor.getEditor(
+            await this.findSequenceByGuid(project, cloneId),
+          )
+          project.lockedAccess(() => {
+            if (isFirstClip && useInsertForFirstClip) {
+              // Target track doesn't exist yet — use insert so Premiere auto-creates it.
+              const insertOk = project.executeTransaction(
+                (c) => c.addAction(placeEditor.createInsertProjectItemAction(
+                  projItem, toTick(iv.startFrame), det.targetTrackIndex, -1, true,
+                )),
+                `Insert cam${iv.camera} @${iv.startFrame}`,
+              )
+              if (!insertOk) throw new Error(`Premiere rejected insert for camera ${iv.camera} at frame ${iv.startFrame}.`)
+            } else {
+              const writeOk = project.executeTransaction(
+                (c) => c.addAction(placeEditor.createOverwriteItemAction(
+                  projItem, toTick(iv.startFrame), det.targetTrackIndex, -1,
+                )),
+                `Overwrite cam${iv.camera} @${iv.startFrame}`,
+              )
+              if (!writeOk) throw new Error(`Premiere rejected overwrite for camera ${iv.camera} at frame ${iv.startFrame}.`)
+            }
+            isFirstClip = false
+          })
+        }
+      } finally {
+        // 9. Restore source in/out points. Always runs.
+        // Re-fetch context and fresh clip handles — every handle from before the
+        // cut transactions is stale here (BANANAS E4).
+        phase = 'restore source in/out'
+        const restoreFailures: string[] = []
+        const rp = await this.ppro.Project.getActiveProject()
+        if (rp) {
+          const rs = await this.findSequenceByGuid(rp, sequenceId)
+          for (const src of det.sources) {
+            const saved = savedState.get(src.camera)
+            if (!saved) continue
+            try {
+              const freshClip = await this.freshSourceClip(rs, src.vIndex)
+              const ok = rp.executeTransaction(
+                (c) => c.addAction(freshClip.createSetInOutPointsAction(
+                  this.ppro.TickTime.createWithTicks(saved.inTicks),
+                  this.ppro.TickTime.createWithTicks(saved.outTicks),
+                )),
+                `Restore in/out cam${src.camera}`,
+              )
+              if (!ok) restoreFailures.push(`Camera ${src.camera}: transaction rejected`)
+            } catch (e) {
+              restoreFailures.push(`Camera ${src.camera}: ${e instanceof Error ? e.message : String(e)}`)
+            }
+          }
+        }
+        if (restoreFailures.length > 0) {
+          throw new Error(
+            `Auto-cut FAILED: could not restore original source in/out points.\n` +
+            `Affected cameras:\n${restoreFailures.map(f => `  • ${f}`).join('\n')}\n` +
+            `Check these clips in the Source Monitor and reset their in/out points manually.`,
+          )
+        }
       }
+
+      // 10. Activate the clone.
+      phase = 'activate clone'
+      await project.setActiveSequence(await this.findSequenceByGuid(project, cloneId))
+
+      return cloneName
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (/script object is no longer valid/i.test(msg)) {
+        throw new Error(`[${phase}] ${msg}`)
+      }
+      throw e
     }
-
-    // 10. Activate the clone.
-    await project.setActiveSequence(clone)
-
-    return cloneName
   }
 
   async assembleSocialSequence(
