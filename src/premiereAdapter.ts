@@ -418,6 +418,16 @@ class UxpPremiereAdapter implements PremiereAdapter {
     }
 
     // 8. Write cut intervals.
+    // Re-fetch again — editor/track-clear operations above span multiple awaits
+    // that can stale project and sequence references in UXP.
+    ;({ project, sequence } = await this.context())
+    if (sequence.guid.toString() !== sequenceId) throw new Error('Active sequence changed. Re-detect before applying.')
+
+    // Pre-compute before the loop — getVideoTrackCount() is async and cannot be
+    // awaited inside the synchronous lockedAccess callback.
+    const cloneTrackCount = await clone.getVideoTrackCount()
+    const useInsertForFirstClip = det.targetTrackIndex >= cloneTrackCount
+
     try {
       let isFirstClip = true
       for (const iv of intervals) {
@@ -441,8 +451,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
 
         // Step 2: Place on target track (video-only, audioTrackIndex = -1).
         project.lockedAccess(() => {
-          if (isFirstClip && det.targetTrackIndex >= (clone as unknown as { getVideoTrackCount(): number }).getVideoTrackCount?.() || false) {
-            // If the target track doesn't exist yet, use insert to auto-create it.
+          if (isFirstClip && useInsertForFirstClip) {
+            // Target track doesn't exist yet — use insert so Premiere auto-creates it.
             const insertOk = project.executeTransaction(
               (c) => c.addAction(editor.createInsertProjectItemAction(
                 projItem, toTick(iv.startFrame), det.targetTrackIndex, -1, true,
