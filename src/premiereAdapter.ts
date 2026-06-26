@@ -181,6 +181,18 @@ class UxpPremiereAdapter implements PremiereAdapter {
     return Math.round(tt.ticksNumber / fr.ticksPerFrame)
   }
 
+  /**
+   * Re-query a camera's source ClipProjectItem from a live sequence handle.
+   * Premiere invalidates project-item handles fetched before a clone/remove
+   * transaction (see BANANAS E4), so every post-transaction use must re-fetch.
+   */
+  private async freshSourceClip(sequence: Sequence, vIndex: number): Promise<ClipProjectItem> {
+    const track = await sequence.getVideoTrack(vIndex)
+    const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+    const projItem = await (items[0] as VideoClipTrackItem).getProjectItem()
+    return this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
+  }
+
   async detectSources(): Promise<DetectedSources> {
     const { sequence } = await this.context()
     const sequenceId = sequence.guid.toString()
@@ -356,13 +368,14 @@ class UxpPremiereAdapter implements PremiereAdapter {
     // 4. Build intervals (validates coverage — rejects on any gap).
     const intervals = buildCutIntervals(normalized, endFrame, det.sources)
 
-    // 5. Save original in/out points.
-    const savedState = new Map<number, { inPoint: TickTime; outPoint: TickTime }>()
+    // 5. Save original in/out points as raw tick strings.
+    // Storing TickTime objects would also go stale across the clone; the string
+    // is plain data that rebuilds an exact handle later via createWithTicks.
+    const savedState = new Map<number, { inTicks: string; outTicks: string }>()
     for (const [cam, clip] of clipMap) {
-      savedState.set(cam, {
-        inPoint: await clip.getInPoint(this.ppro.Constants.MediaType.VIDEO),
-        outPoint: await clip.getOutPoint(this.ppro.Constants.MediaType.VIDEO),
-      })
+      const inP = await clip.getInPoint(this.ppro.Constants.MediaType.VIDEO)
+      const outP = await clip.getOutPoint(this.ppro.Constants.MediaType.VIDEO)
+      savedState.set(cam, { inTicks: inP.ticks, outTicks: outP.ticks })
     }
 
     // 6. Clone sequence.
@@ -431,13 +444,15 @@ class UxpPremiereAdapter implements PremiereAdapter {
     try {
       let isFirstClip = true
       for (const iv of intervals) {
-        const clip = clipMap.get(iv.camera)!
-        // Use the underlying ProjectItem for the overwrite action.
+        // Re-query the source clip fresh every iteration. The pre-clone clipMap
+        // handles are stale here (BANANAS E4); use one fresh handle for both the
+        // in/out set and the overwrite so they reference the same live object.
         const srcTrack = await sequence.getVideoTrack(
           det.sources.find(s => s.camera === iv.camera)!.vIndex,
         )
         const srcItems = await srcTrack.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
         const projItem = await (srcItems[0] as VideoClipTrackItem).getProjectItem()
+        const clip = this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
 
         // Step 1: Set source in/out range.
         const setOk = project.executeTransaction(
@@ -474,17 +489,25 @@ class UxpPremiereAdapter implements PremiereAdapter {
       }
     } finally {
       // 9. Restore source in/out points. Always runs.
+      // Re-fetch context and fresh clip handles — every handle from before the
+      // cut transactions is stale here (BANANAS E4).
       const restoreFailures: string[] = []
-      for (const [cam, clip] of clipMap) {
-        const saved = savedState.get(cam)!
+      const { project: rp, sequence: rs } = await this.context()
+      for (const src of det.sources) {
+        const saved = savedState.get(src.camera)
+        if (!saved) continue
         try {
-          const ok = project.executeTransaction(
-            (c) => c.addAction(clip.createSetInOutPointsAction(saved.inPoint, saved.outPoint)),
-            `Restore in/out cam${cam}`,
+          const freshClip = await this.freshSourceClip(rs, src.vIndex)
+          const ok = rp.executeTransaction(
+            (c) => c.addAction(freshClip.createSetInOutPointsAction(
+              this.ppro.TickTime.createWithTicks(saved.inTicks),
+              this.ppro.TickTime.createWithTicks(saved.outTicks),
+            )),
+            `Restore in/out cam${src.camera}`,
           )
-          if (!ok) restoreFailures.push(`Camera ${cam}: transaction rejected`)
+          if (!ok) restoreFailures.push(`Camera ${src.camera}: transaction rejected`)
         } catch (e) {
-          restoreFailures.push(`Camera ${cam}: ${e instanceof Error ? e.message : String(e)}`)
+          restoreFailures.push(`Camera ${src.camera}: ${e instanceof Error ? e.message : String(e)}`)
         }
       }
       if (restoreFailures.length > 0) {
@@ -530,13 +553,12 @@ class UxpPremiereAdapter implements PremiereAdapter {
       clipMap.set(src.camera, this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem)
     }
 
-    // 2. Save original in/out points
-    const savedState = new Map<number, { inPoint: TickTime; outPoint: TickTime }>()
+    // 2. Save original in/out points as raw tick strings (plain data survives the clone).
+    const savedState = new Map<number, { inTicks: string; outTicks: string }>()
     for (const [cam, clip] of clipMap) {
-      savedState.set(cam, {
-        inPoint: await clip.getInPoint(this.ppro.Constants.MediaType.VIDEO),
-        outPoint: await clip.getOutPoint(this.ppro.Constants.MediaType.VIDEO),
-      })
+      const inP = await clip.getInPoint(this.ppro.Constants.MediaType.VIDEO)
+      const outP = await clip.getOutPoint(this.ppro.Constants.MediaType.VIDEO)
+      savedState.set(cam, { inTicks: inP.ticks, outTicks: outP.ticks })
     }
 
     // 3. Clone sequence — re-fetch context so DOM refs are fresh after all the read awaits.
@@ -593,7 +615,17 @@ class UxpPremiereAdapter implements PremiereAdapter {
       return resolveCameraNum(targetName, sourcesList)
     }
 
-    // 6. Write clips sequentially
+    // 6. Write clips sequentially.
+    // Re-fetch context — the clone/rename/clear transactions above stale the
+    // project and sequence handles (BANANAS E4).
+    ;({ project, sequence } = await this.context())
+    if (sequence.guid.toString() !== sequenceId) throw new Error('Active sequence changed. Re-detect before applying.')
+
+    // Pre-compute the insert-vs-overwrite decision — getVideoTrackCount() is async
+    // and cannot be awaited inside the synchronous lockedAccess callback.
+    const cloneTrackCount = await clone.getVideoTrackCount()
+    const useInsertForFirstClip = det.targetTrackIndex >= cloneTrackCount
+
     try {
       let currentStartFrame = 0
       let isFirstClip = true
@@ -604,7 +636,6 @@ class UxpPremiereAdapter implements PremiereAdapter {
         const speakerName = match ? match[1] : 'Wide'
         const camNum = speakerToCamera(speakerName)
 
-        const clip = clipMap.get(camNum)!
         const srcInfo = det.sources.find(s => s.camera === camNum)!
 
         // Map timeline seconds to frames
@@ -618,6 +649,12 @@ class UxpPremiereAdapter implements PremiereAdapter {
         const sourceInFrame = startFrame - srcInfo.clipStartFrame + srcInfo.clipInFrame
         const sourceOutFrame = endFrame - srcInfo.clipStartFrame + srcInfo.clipInFrame
 
+        // Re-query the source clip fresh; one live handle for both in/out and overwrite.
+        const srcTrack = await sequence.getVideoTrack(srcInfo.vIndex)
+        const srcItems = await srcTrack.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+        const projItem = await (srcItems[0] as VideoClipTrackItem).getProjectItem()
+        const clip = this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
+
         // Set source in/out
         const setOk = project.executeTransaction(
           (c) => c.addAction(clip.createSetInOutPointsAction(
@@ -628,13 +665,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
         )
         if (!setOk) throw new Error(`Premiere rejected in/out for camera ${camNum}.`)
 
-        // Get underlying project item for target track overwrite
-        const srcTrack = await sequence.getVideoTrack(srcInfo.vIndex)
-        const srcItems = await srcTrack.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
-        const projItem = await (srcItems[0] as VideoClipTrackItem).getProjectItem()
-
         project.lockedAccess(() => {
-          if (isFirstClip && det.targetTrackIndex >= (clone as unknown as { getVideoTrackCount(): number }).getVideoTrackCount?.() || false) {
+          if (isFirstClip && useInsertForFirstClip) {
             project.executeTransaction(
               (c) => c.addAction(editor.createInsertProjectItemAction(
                 projItem, toTick(currentStartFrame), det.targetTrackIndex, -1, true,
@@ -655,18 +687,24 @@ class UxpPremiereAdapter implements PremiereAdapter {
         currentStartFrame += duration
       }
     } finally {
-      // 7. Restore source in/out points
+      // 7. Restore source in/out points with re-fetched context and fresh handles.
       const restoreFailures: string[] = []
-      for (const [cam, clip] of clipMap) {
-        const saved = savedState.get(cam)!
+      const { project: rp, sequence: rs } = await this.context()
+      for (const src of det.sources) {
+        const saved = savedState.get(src.camera)
+        if (!saved) continue
         try {
-          const ok = project.executeTransaction(
-            (c) => c.addAction(clip.createSetInOutPointsAction(saved.inPoint, saved.outPoint)),
-            `Restore in/out cam${cam}`,
+          const freshClip = await this.freshSourceClip(rs, src.vIndex)
+          const ok = rp.executeTransaction(
+            (c) => c.addAction(freshClip.createSetInOutPointsAction(
+              this.ppro.TickTime.createWithTicks(saved.inTicks),
+              this.ppro.TickTime.createWithTicks(saved.outTicks),
+            )),
+            `Restore in/out cam${src.camera}`,
           )
-          if (!ok) restoreFailures.push(`Camera ${cam}: transaction rejected`)
+          if (!ok) restoreFailures.push(`Camera ${src.camera}: transaction rejected`)
         } catch (e) {
-          restoreFailures.push(`Camera ${cam}: ${e instanceof Error ? e.message : String(e)}`)
+          restoreFailures.push(`Camera ${src.camera}: ${e instanceof Error ? e.message : String(e)}`)
         }
       }
       if (restoreFailures.length > 0) {

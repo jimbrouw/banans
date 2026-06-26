@@ -90,11 +90,11 @@ describe('selectOutputTrack', () => {
 
 describe('validateDetectedSources', () => {
   it('rejects fewer than 2 cameras', () => {
-    expect(() => validateDetectedSources([cam(1)], 1)).toThrow('at least 2 camera tracks')
+    expect(() => validateDetectedSources([cam(1)], 1)).toThrow('only 1 camera track')
   })
 
   it('rejects 0 cameras', () => {
-    expect(() => validateDetectedSources([], 0)).toThrow('at least 2 camera tracks')
+    expect(() => validateDetectedSources([], 0)).toThrow('found no camera tracks')
   })
 
   it('accepts 2 cameras', () => {
