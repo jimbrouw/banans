@@ -396,10 +396,14 @@ class UxpPremiereAdapter implements PremiereAdapter {
       }
 
       // 6. Clone sequence.
+      // Snapshot existing sequence guids FIRST: any await between fetching the
+      // `sequence` handle and using it in createCloneAction() invalidates it
+      // (BANANAS E4). The fetch of `sequence` must be the last await before the
+      // clone transaction, with only synchronous work in between.
       phase = 'clone sequence'
+      const beforeGuids = new Set((await project.getSequences()).map(s => s.guid.toString()))
       ;({ project, sequence } = await this.context())
       if (sequence.guid.toString() !== sequenceId) throw new Error('Active sequence changed. Re-detect before applying.')
-      const beforeGuids = new Set((await project.getSequences()).map(s => s.guid.toString()))
       const cloneOk = project.executeTransaction(
         (c) => c.addAction(sequence.createCloneAction()),
         'RoughCut auto-cut clone',
@@ -593,10 +597,11 @@ class UxpPremiereAdapter implements PremiereAdapter {
       savedState.set(cam, { inTicks: inP.ticks, outTicks: outP.ticks })
     }
 
-    // 3. Clone sequence — re-fetch context so DOM refs are fresh after all the read awaits.
+    // 3. Clone sequence. Snapshot guids FIRST: the `sequence` fetch must be the
+    // last await before createCloneAction(), or the handle stales (BANANAS E4).
+    const beforeGuids = new Set((await project.getSequences()).map(s => s.guid.toString()))
     ;({ project, sequence } = await this.context())
     if (sequence.guid.toString() !== sequenceId) throw new Error('Active sequence changed. Re-detect before applying.')
-    const beforeGuids = new Set((await project.getSequences()).map(s => s.guid.toString()))
     const cloneOk = project.executeTransaction(
       (c) => c.addAction(sequence.createCloneAction()),
       'RoughCut cold open clone',
