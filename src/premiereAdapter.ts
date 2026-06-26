@@ -1,5 +1,6 @@
 import type {
   ClipProjectItem,
+  CompoundAction,
   FrameRate,
   premierepro,
   Project,
@@ -142,7 +143,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const markers = await this.ppro.Markers.getMarkers(sequence)
     for (let i = 0; i < decisions.length; i += BATCH) {
       const batch = decisions.slice(i, i + BATCH)
-      const committed = project.executeTransaction((compound) => {
+      const committed = this.tx(project, (compound) => {
         for (const decision of batch) {
           const start = this.ppro.TickTime.createWithSeconds(decision.start)
           const dur = this.ppro.TickTime.createWithSeconds(Math.max(0, (decision.end ?? decision.start) - decision.start))
@@ -158,13 +159,13 @@ class UxpPremiereAdapter implements PremiereAdapter {
     void sequenceId
     const { project, sequence } = await this.context()
     const existingIds = new Set((await project.getSequences()).map((item) => item.guid.toString()))
-    const cloned = project.executeTransaction((compound) => compound.addAction(sequence.createCloneAction()), 'Create RoughCut sequence')
+    const cloned = this.tx(project, (compound) => compound.addAction(sequence.createCloneAction()), 'Create RoughCut sequence')
     if (!cloned) throw new Error('Premiere could not clone the active sequence.')
     const roughCut = (await project.getSequences()).find((item) => !existingIds.has(item.guid.toString()))
     if (!roughCut) throw new Error('Premiere cloned the sequence but did not return the new sequence.')
     const name = `${sequence.name} - AI Rough Cut`
     const projectItem = await roughCut.getProjectItem()
-    const named = project.executeTransaction((compound) => compound.addAction(projectItem.createSetNameAction(name)), 'Name RoughCut sequence')
+    const named = this.tx(project, (compound) => compound.addAction(projectItem.createSetNameAction(name)), 'Name RoughCut sequence')
     if (!named) throw new Error('Premiere cloned the sequence but could not rename it.')
     await this.writeMarkers(project, roughCut, decisions, 'Add RoughCut markers')
     if (!await project.setActiveSequence(roughCut)) throw new Error('The rough cut was created, but Premiere could not open it.')
@@ -202,6 +203,25 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const seq = (await project.getSequences()).find(s => s.guid.toString() === guid)
     if (!seq) throw new Error('Sequence no longer exists. Re-detect before applying.')
     return seq
+  }
+
+  /**
+   * Run an undoable transaction inside a locked-access scope. Premiere requires
+   * every mutating executeTransaction to be wrapped in lockedAccess — outside the
+   * lock, the sequence/clip handles referenced by the action are reported as
+   * "script object is no longer valid". lockedAccess returns void, so the
+   * transaction result is captured via closure.
+   */
+  private tx(
+    project: Project,
+    build: (compound: CompoundAction) => void,
+    label: string,
+  ): boolean {
+    let ok = false
+    project.lockedAccess(() => {
+      ok = project.executeTransaction(build, label)
+    })
+    return ok
   }
 
   async detectSources(): Promise<DetectedSources> {
@@ -404,7 +424,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
       const beforeGuids = new Set((await project.getSequences()).map(s => s.guid.toString()))
       ;({ project, sequence } = await this.context())
       if (sequence.guid.toString() !== sequenceId) throw new Error('Active sequence changed. Re-detect before applying.')
-      const cloneOk = project.executeTransaction(
+      const cloneOk = this.tx(
+        project,
         (c) => c.addAction(sequence.createCloneAction()),
         'RoughCut auto-cut clone',
       )
@@ -419,7 +440,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
       const baseName = sequence.name.replace(/ - Auto Cut( \d+)?$/, '')
       const cloneName = `${baseName} - Auto Cut`
       const cloneItem = await cloneRef.getProjectItem()
-      const renameOk = project.executeTransaction(
+      const renameOk = this.tx(
+        project,
         (c) => c.addAction(cloneItem.createSetNameAction(cloneName)),
         'Rename auto-cut clone',
       )
@@ -442,15 +464,14 @@ class UxpPremiereAdapter implements PremiereAdapter {
             clearSelection = await clearClone.getSelection()
           }
           for (const item of existingItems) clearSelection!.addItem(item as VideoClipTrackItem)
-          project.lockedAccess(() => {
-            const removeOk = project.executeTransaction(
-              (c) => c.addAction(clearEditor.createRemoveItemsAction(
-                clearSelection!, false, this.ppro.Constants.MediaType.VIDEO, false,
-              )),
-              'Clear target track',
-            )
-            if (!removeOk) throw new Error('Premiere rejected the clear-track transaction.')
-          })
+          const removeOk = this.tx(
+            project,
+            (c) => c.addAction(clearEditor.createRemoveItemsAction(
+              clearSelection!, false, this.ppro.Constants.MediaType.VIDEO, false,
+            )),
+            'Clear target track',
+          )
+          if (!removeOk) throw new Error('Premiere rejected the clear-track transaction.')
         }
       }
 
@@ -475,7 +496,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
           const clip = this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
 
           // Step 1: Set source in/out range.
-          const setOk = project.executeTransaction(
+          const setOk = this.tx(
+            project,
             (c) => c.addAction(clip.createSetInOutPointsAction(
               toTick(iv.sourceInFrame),
               toTick(iv.sourceOutFrame),
@@ -489,27 +511,27 @@ class UxpPremiereAdapter implements PremiereAdapter {
           const placeEditor = await this.ppro.SequenceEditor.getEditor(
             await this.findSequenceByGuid(project, cloneId),
           )
-          project.lockedAccess(() => {
-            if (isFirstClip && useInsertForFirstClip) {
-              // Target track doesn't exist yet — use insert so Premiere auto-creates it.
-              const insertOk = project.executeTransaction(
-                (c) => c.addAction(placeEditor.createInsertProjectItemAction(
-                  projItem, toTick(iv.startFrame), det.targetTrackIndex, -1, true,
-                )),
-                `Insert cam${iv.camera} @${iv.startFrame}`,
-              )
-              if (!insertOk) throw new Error(`Premiere rejected insert for camera ${iv.camera} at frame ${iv.startFrame}.`)
-            } else {
-              const writeOk = project.executeTransaction(
-                (c) => c.addAction(placeEditor.createOverwriteItemAction(
-                  projItem, toTick(iv.startFrame), det.targetTrackIndex, -1,
-                )),
-                `Overwrite cam${iv.camera} @${iv.startFrame}`,
-              )
-              if (!writeOk) throw new Error(`Premiere rejected overwrite for camera ${iv.camera} at frame ${iv.startFrame}.`)
-            }
-            isFirstClip = false
-          })
+          if (isFirstClip && useInsertForFirstClip) {
+            // Target track doesn't exist yet — use insert so Premiere auto-creates it.
+            const insertOk = this.tx(
+              project,
+              (c) => c.addAction(placeEditor.createInsertProjectItemAction(
+                projItem, toTick(iv.startFrame), det.targetTrackIndex, -1, true,
+              )),
+              `Insert cam${iv.camera} @${iv.startFrame}`,
+            )
+            if (!insertOk) throw new Error(`Premiere rejected insert for camera ${iv.camera} at frame ${iv.startFrame}.`)
+          } else {
+            const writeOk = this.tx(
+              project,
+              (c) => c.addAction(placeEditor.createOverwriteItemAction(
+                projItem, toTick(iv.startFrame), det.targetTrackIndex, -1,
+              )),
+              `Overwrite cam${iv.camera} @${iv.startFrame}`,
+            )
+            if (!writeOk) throw new Error(`Premiere rejected overwrite for camera ${iv.camera} at frame ${iv.startFrame}.`)
+          }
+          isFirstClip = false
         }
       } finally {
         // 9. Restore source in/out points. Always runs.
@@ -525,7 +547,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
             if (!saved) continue
             try {
               const freshClip = await this.freshSourceClip(rs, src.vIndex)
-              const ok = rp.executeTransaction(
+              const ok = this.tx(
+                rp,
                 (c) => c.addAction(freshClip.createSetInOutPointsAction(
                   this.ppro.TickTime.createWithTicks(saved.inTicks),
                   this.ppro.TickTime.createWithTicks(saved.outTicks),
@@ -602,7 +625,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const beforeGuids = new Set((await project.getSequences()).map(s => s.guid.toString()))
     ;({ project, sequence } = await this.context())
     if (sequence.guid.toString() !== sequenceId) throw new Error('Active sequence changed. Re-detect before applying.')
-    const cloneOk = project.executeTransaction(
+    const cloneOk = this.tx(
+      project,
       (c) => c.addAction(sequence.createCloneAction()),
       'RoughCut cold open clone',
     )
@@ -615,7 +639,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const baseName = sequence.name.replace(/ - Cold Open( \d+)?$/, '')
     const cloneName = `${baseName} - Cold Open`
     const cloneItem = await clone.getProjectItem()
-    project.executeTransaction(
+    this.tx(
+      project,
       (c) => c.addAction(cloneItem.createSetNameAction(cloneName)),
       'Rename cold open clone',
     )
@@ -632,14 +657,13 @@ class UxpPremiereAdapter implements PremiereAdapter {
         this.ppro.TrackItemSelection.createEmptySelection((sel) => { clearSelection = sel })
         if (!clearSelection) clearSelection = await clone.getSelection()
         for (const item of existingItems) clearSelection!.addItem(item as VideoClipTrackItem)
-        project.lockedAccess(() => {
-          project.executeTransaction(
-            (c) => c.addAction(editor.createRemoveItemsAction(
-              clearSelection!, false, this.ppro.Constants.MediaType.VIDEO, false,
-            )),
-            'Clear target track',
-          )
-        })
+        this.tx(
+          project,
+          (c) => c.addAction(editor.createRemoveItemsAction(
+            clearSelection!, false, this.ppro.Constants.MediaType.VIDEO, false,
+          )),
+          'Clear target track',
+        )
       }
     }
 
@@ -693,7 +717,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
         const clip = this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
 
         // Set source in/out
-        const setOk = project.executeTransaction(
+        const setOk = this.tx(
+          project,
           (c) => c.addAction(clip.createSetInOutPointsAction(
             toTick(sourceInFrame),
             toTick(sourceOutFrame),
@@ -702,24 +727,24 @@ class UxpPremiereAdapter implements PremiereAdapter {
         )
         if (!setOk) throw new Error(`Premiere rejected in/out for camera ${camNum}.`)
 
-        project.lockedAccess(() => {
-          if (isFirstClip && useInsertForFirstClip) {
-            project.executeTransaction(
-              (c) => c.addAction(editor.createInsertProjectItemAction(
-                projItem, toTick(currentStartFrame), det.targetTrackIndex, -1, true,
-              )),
-              `Insert hook cam${camNum} @${currentStartFrame}`,
-            )
-          } else {
-            project.executeTransaction(
-              (c) => c.addAction(editor.createOverwriteItemAction(
-                projItem, toTick(currentStartFrame), det.targetTrackIndex, -1,
-              )),
-              `Overwrite hook cam${camNum} @${currentStartFrame}`,
-            )
-          }
-          isFirstClip = false
-        })
+        if (isFirstClip && useInsertForFirstClip) {
+          this.tx(
+            project,
+            (c) => c.addAction(editor.createInsertProjectItemAction(
+              projItem, toTick(currentStartFrame), det.targetTrackIndex, -1, true,
+            )),
+            `Insert hook cam${camNum} @${currentStartFrame}`,
+          )
+        } else {
+          this.tx(
+            project,
+            (c) => c.addAction(editor.createOverwriteItemAction(
+              projItem, toTick(currentStartFrame), det.targetTrackIndex, -1,
+            )),
+            `Overwrite hook cam${camNum} @${currentStartFrame}`,
+          )
+        }
+        isFirstClip = false
 
         currentStartFrame += duration
       }
@@ -732,7 +757,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
         if (!saved) continue
         try {
           const freshClip = await this.freshSourceClip(rs, src.vIndex)
-          const ok = rp.executeTransaction(
+          const ok = this.tx(
+            rp,
             (c) => c.addAction(freshClip.createSetInOutPointsAction(
               this.ppro.TickTime.createWithTicks(saved.inTicks),
               this.ppro.TickTime.createWithTicks(saved.outTicks),
