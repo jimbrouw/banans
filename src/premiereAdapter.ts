@@ -290,7 +290,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     endFrame: number,
   ): Promise<string> {
     // 1. Validate sequence identity.
-    const { project, sequence } = await this.context()
+    let { project, sequence } = await this.context()
     const activeId = sequence.guid.toString()
     if (activeId !== sequenceId) {
       throw new Error('Active sequence changed. Re-detect before applying.')
@@ -366,6 +366,10 @@ class UxpPremiereAdapter implements PremiereAdapter {
     }
 
     // 6. Clone sequence.
+    // Re-fetch context: the read phase above has many awaits and Premiere's DOM objects
+    // go stale across them, causing "script object is no longer valid" on transactions.
+    ;({ project, sequence } = await this.context())
+    if (sequence.guid.toString() !== sequenceId) throw new Error('Active sequence changed. Re-detect before applying.')
     const beforeGuids = new Set((await project.getSequences()).map(s => s.guid.toString()))
     const cloneOk = project.executeTransaction(
       (c) => c.addAction(sequence.createCloneAction()),
@@ -494,7 +498,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     mappings: SpeakerMapping[],
     det: DetectedSources
   ): Promise<string> {
-    const { project, sequence } = await this.context()
+    let { project, sequence } = await this.context()
     const activeId = sequence.guid.toString()
     if (activeId !== sequenceId) {
       throw new Error('Active sequence changed. Re-detect before applying.')
@@ -525,7 +529,9 @@ class UxpPremiereAdapter implements PremiereAdapter {
       })
     }
 
-    // 3. Clone sequence
+    // 3. Clone sequence — re-fetch context so DOM refs are fresh after all the read awaits.
+    ;({ project, sequence } = await this.context())
+    if (sequence.guid.toString() !== sequenceId) throw new Error('Active sequence changed. Re-detect before applying.')
     const beforeGuids = new Set((await project.getSequences()).map(s => s.guid.toString()))
     const cloneOk = project.executeTransaction(
       (c) => c.addAction(sequence.createCloneAction()),
