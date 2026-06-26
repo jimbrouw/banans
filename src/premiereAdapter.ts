@@ -198,6 +198,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const videoTrackCount = await sequence.getVideoTrackCount()
     const sources: CameraSource[] = []
     const trackItemCounts = new Map<number, number>()
+    let multicamClipName = ''
 
     for (let v = 0; v < videoTrackCount; v++) {
       const track = await sequence.getVideoTrack(v)
@@ -207,14 +208,18 @@ class UxpPremiereAdapter implements PremiereAdapter {
       // Classify this track.
       let isSeq = false
       let isAdj = false
+      let itemName = ''
       if (items.length === 1) {
         const ti = items[0] as VideoClipTrackItem
         isAdj = await ti.isAdjustmentLayer()
         if (!isAdj) {
           try {
             const projItem = await ti.getProjectItem()
+            itemName = projItem.name
             const clip = this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
             isSeq = await clip.isSequence()
+            // Multicam source clips register as sequences and have [MCn] in their name.
+            if (isSeq && /\[MC\d/i.test(itemName)) multicamClipName = itemName
           } catch {
             // If cast fails, treat as non-sequence (e.g. graphic).
           }
@@ -252,6 +257,13 @@ class UxpPremiereAdapter implements PremiereAdapter {
       videoTrackCount,
       (v) => trackItemCounts.get(v) ?? 0,
     )
+
+    if (sources.length < 2 && multicamClipName) {
+      throw new Error(
+        `This sequence contains a Multicam Source Clip ("${multicamClipName}") — Auto-Cut needs individual camera tracks, not a merged multicam clip.\n\n` +
+        `To fix: open the original multi-camera source sequence where each camera is on its own video track (V1 = Camera 1, V2 = Camera 2, etc.), then run Detect Cameras from there.`
+      )
+    }
 
     validateDetectedSources(sources, targetTrackIndex)
 
