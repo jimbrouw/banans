@@ -67,9 +67,30 @@ describe('autopilot.ts unit tests', () => {
         switchAggressiveness: 'high' as const
       }
       const cuts = generateCutMapForProfile(mockSegments, mockMappings, mockSources, profile, 600, 30)
-      
+
       // Since it's dynamic with high aggressiveness, the short "Yeah" turn (Host, 12.5s -> 13s) is not skipped.
       expect(cuts.map(c => c.frame)).toContain(375) // 12.5s * 30 = 375
+    })
+
+    it('rotates cameras when the transcript has no speaker diarization', () => {
+      // Every segment is the same speaker ("Unknown" with no mapping) → speaker-based
+      // switching yields a single camera, so the rotation fallback must kick in.
+      const noSpeakerSegments: TranscriptSegment[] = Array.from({ length: 30 }, (_, i) => ({
+        id: `${i}`, start: i * 4, end: i * 4 + 3.5, speaker: 'Unknown',
+        text: `Segment number ${i} of the conversation.`, confidence: 0.9,
+      }))
+      const profile = {
+        name: 'Balanced', description: '', minShotSeconds: 2.5, switchAggressiveness: 'medium' as const,
+      }
+      const cuts = generateCutMapForProfile(noSpeakerSegments, [], mockSources, profile, 30 * 120, 30)
+
+      // Multiple distinct cameras, starting at frame 0, switching no faster than 7.5s.
+      expect(cuts.length).toBeGreaterThan(2)
+      expect(cuts[0]).toEqual({ frame: 0, camera: 1 })
+      expect(new Set(cuts.map((c) => c.camera)).size).toBeGreaterThan(1)
+      for (let i = 1; i < cuts.length; i++) {
+        expect((cuts[i].frame - cuts[i - 1].frame) / 30).toBeGreaterThanOrEqual(7.5)
+      }
     })
   })
 

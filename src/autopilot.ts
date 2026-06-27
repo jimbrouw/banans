@@ -136,7 +136,46 @@ export function generateCutMapForProfile(
     }
   })
 
-  return cleanCuts.sort((a, b) => a.frame - b.frame)
+  const sorted = cleanCuts.sort((a, b) => a.frame - b.frame)
+
+  // Fallback: if speaker-based switching produced a single camera (e.g. the
+  // transcript has no speaker diarization — every segment is "Unknown"), there
+  // is nothing to switch on. Rotate through the available cameras on speech-
+  // segment boundaries at the profile's cadence so the cut actually alternates.
+  const distinctCameras = new Set(sorted.map(c => c.camera)).size
+  if (distinctCameras <= 1 && sources.length >= 2) {
+    return rotateCutMap(ordered, sources, profile, totalFrames, frameRate)
+  }
+
+  return sorted
+}
+
+/** Cadence-based camera rotation for when speaker diarization is unavailable. */
+function rotateCutMap(
+  ordered: TranscriptSegment[],
+  sources: { camera: number; name: string }[],
+  profile: AutopilotProfile,
+  totalFrames: number,
+  frameRate: number
+): CutPoint[] {
+  const maxCutsPerMin = profile.switchAggressiveness === 'high' ? 12 : profile.switchAggressiveness === 'medium' ? 8 : 5
+  // Switch no faster than the profile's frequency limit, and never below its min shot.
+  const minInterval = Math.max(profile.minShotSeconds, 60 / maxCutsPerMin)
+  const toFrame = (sec: number) => Math.min(totalFrames - 1, Math.max(0, Math.round(sec * frameRate)))
+
+  const cuts: CutPoint[] = [{ frame: 0, camera: sources[0].camera }]
+  let lastSwitch = 0
+  let idx = 0
+  for (const segment of ordered) {
+    if (segment.start - lastSwitch < minInterval) continue
+    idx = (idx + 1) % sources.length
+    const frame = toFrame(segment.start)
+    if (frame > cuts[cuts.length - 1].frame) {
+      cuts.push({ frame, camera: sources[idx].camera })
+      lastSwitch = segment.start
+    }
+  }
+  return cuts
 }
 
 export function evaluateCutMap(

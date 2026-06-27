@@ -195,13 +195,6 @@ class UxpPremiereAdapter implements PremiereAdapter {
     return this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
   }
 
-  /** Like freshSourceClip but returns the raw ProjectItem (needed for overwrite/insert actions). */
-  private async freshSourceProjectItem(sequence: Sequence, vIndex: number): Promise<ProjectItem> {
-    const track = await sequence.getVideoTrack(vIndex)
-    const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
-    return (items[0] as VideoClipTrackItem).getProjectItem()
-  }
-
   /**
    * Re-fetch a live Sequence handle by guid. UXP invalidates Sequence objects
    * across each transaction (BANANAS E4); re-finding by stable guid right before
@@ -468,16 +461,34 @@ class UxpPremiereAdapter implements PremiereAdapter {
       const needsBlade = intervals.length > 1
       let bladed = false
       try {
+        // Cache live handles once. lockedAccess keeps them valid across transactions
+        // (the reuse pattern the working Vibe-splice spike relies on), so a dense cut
+        // avoids thousands of getSequences()/getEditor() round-trips. camClip and
+        // camItem are the SAME underlying bin item — one cast for setInOut, one raw
+        // ProjectItem for the overwrite.
+        phase = 'prepare clone editor + sources'
+        const cloneSeq = await this.findSequenceByGuid(project, cloneId)
+        const editor = await this.ppro.SequenceEditor.getEditor(cloneSeq)
+        const origSeq = await this.findSequenceByGuid(project, sequenceId)
+        const camItem = new Map<number, ProjectItem>()
+        const camClip = new Map<number, ClipProjectItem>()
+        for (const src of det.sources) {
+          const track = await origSeq.getVideoTrack(src.vIndex)
+          const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+          const pi = await (items[0] as VideoClipTrackItem).getProjectItem()
+          camItem.set(src.camera, pi)
+          camClip.set(src.camera, this.ppro.ClipProjectItem.cast(pi) as ClipProjectItem)
+        }
+
         if (needsBlade) {
-          phase = 'blade camera tracks'
           for (const src of det.sources) {
+            const clip = camClip.get(src.camera)!
+            const projItem = camItem.get(src.camera)!
             for (const iv of intervals) {
               if (!coversInterval(src, iv)) continue
               const kIn = iv.startFrame - src.clipStartFrame + src.clipInFrame
               const kOut = iv.endFrame - src.clipStartFrame + src.clipInFrame
               phase = `blade cam${src.camera} @${iv.startFrame}`
-              const origSeq = await this.findSequenceByGuid(project, sequenceId)
-              const clip = await this.freshSourceClip(origSeq, src.vIndex)
               const setOk = this.tx(
                 project,
                 (c) => c.addAction(clip.createSetInOutPointsAction(toTick(kIn), toTick(kOut))),
@@ -485,8 +496,6 @@ class UxpPremiereAdapter implements PremiereAdapter {
               )
               if (!setOk) throw new Error(`Premiere rejected in/out for camera ${src.camera}.`)
               bladed = true
-              const editor = await this.ppro.SequenceEditor.getEditor(await this.findSequenceByGuid(project, cloneId))
-              const projItem = await this.freshSourceProjectItem(origSeq, src.vIndex)
               const writeOk = this.tx(
                 project,
                 (c) => c.addAction(editor.createOverwriteItemAction(projItem, toTick(iv.startFrame), src.vIndex, -1)),
@@ -497,30 +506,32 @@ class UxpPremiereAdapter implements PremiereAdapter {
           }
         }
 
-        // Disable every segment whose camera is not the focus for its interval.
-        // Re-fetch the track items fresh for each disable — each transaction stales
-        // the previously-read item handles (BANANAS E4).
+        // Disable every non-focus segment. Read each track's items once, map them by
+        // start frame, then disable in compound batches (one transaction per batch,
+        // kept small so a single transaction never grows too large).
         for (const src of det.sources) {
-          for (const iv of intervals) {
-            if (iv.camera === src.camera || !coversInterval(src, iv)) continue
-            phase = `disable cam${src.camera} @${iv.startFrame}`
-            const cloneSeq = await this.findSequenceByGuid(project, cloneId)
-            const track = await cloneSeq.getVideoTrack(src.vIndex)
-            const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
-            let target: VideoClipTrackItem | null = null
-            for (const item of items) {
-              const startF = this.tickToFrame(await item.getStartTime(), fr)
-              const endF = this.tickToFrame(await item.getEndTime(), fr)
-              if (startF <= iv.startFrame + 1 && iv.startFrame < endF) { target = item as VideoClipTrackItem; break }
-            }
-            if (!target) continue
-            const t = target
-            const disableOk = this.tx(
+          const toDisable = intervals.filter((iv) => iv.camera !== src.camera && coversInterval(src, iv))
+          if (toDisable.length === 0) continue
+          phase = `disable cam${src.camera}`
+          const track = await cloneSeq.getVideoTrack(src.vIndex)
+          const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+          const byStart = new Map<number, VideoClipTrackItem>()
+          for (const it of items) byStart.set(this.tickToFrame(await it.getStartTime(), fr), it as VideoClipTrackItem)
+          const targets: VideoClipTrackItem[] = []
+          for (const iv of toDisable) {
+            const hit = byStart.get(iv.startFrame) ?? byStart.get(iv.startFrame - 1) ?? byStart.get(iv.startFrame + 1)
+            if (hit) targets.push(hit)
+          }
+          const BATCH = 20
+          for (let i = 0; i < targets.length; i += BATCH) {
+            const chunk = targets.slice(i, i + BATCH)
+            phase = `disable cam${src.camera} batch ${Math.floor(i / BATCH) + 1}`
+            const ok = this.tx(
               project,
-              (c) => c.addAction(t.createSetDisabledAction(true)),
-              `Disable cam${src.camera} @${iv.startFrame}`,
+              (c) => { for (const it of chunk) c.addAction(it.createSetDisabledAction(true)) },
+              `Disable cam${src.camera} ${i}`,
             )
-            if (!disableOk) throw new Error(`Premiere rejected disable for camera ${src.camera} at frame ${iv.startFrame}.`)
+            if (!ok) throw new Error(`Premiere rejected disable batch for camera ${src.camera}.`)
           }
         }
       } finally {
