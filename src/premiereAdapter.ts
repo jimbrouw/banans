@@ -4,6 +4,7 @@ import type {
   FrameRate,
   premierepro,
   Project,
+  ProjectItem,
   Sequence,
   TickTime,
   VideoClipTrackItem,
@@ -192,6 +193,13 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
     const projItem = await (items[0] as VideoClipTrackItem).getProjectItem()
     return this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
+  }
+
+  /** Like freshSourceClip but returns the raw ProjectItem (needed for overwrite/insert actions). */
+  private async freshSourceProjectItem(sequence: Sequence, vIndex: number): Promise<ProjectItem> {
+    const track = await sequence.getVideoTrack(vIndex)
+    const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+    return (items[0] as VideoClipTrackItem).getProjectItem()
   }
 
   /**
@@ -447,130 +455,112 @@ class UxpPremiereAdapter implements PremiereAdapter {
       )
       if (!renameOk) throw new Error('Premiere rejected the rename transaction.')
 
-      // 7. Clear target track on clone (if items exist).
-      phase = 'clear target track'
-      const clearClone = await this.findSequenceByGuid(project, cloneId)
-      if (det.targetTrackIndex < await clearClone.getVideoTrackCount()) {
-        const cloneTargetTrack = await clearClone.getVideoTrack(det.targetTrackIndex)
-        const existingItems = await cloneTargetTrack.getTrackItems(
-          this.ppro.Constants.TrackItemType.CLIP, false,
-        )
-        if (existingItems.length > 0) {
-          const clearEditor = await this.ppro.SequenceEditor.getEditor(clearClone)
-          let clearSelection: Awaited<ReturnType<typeof clearClone.getSelection>> | null = null
-          this.ppro.TrackItemSelection.createEmptySelection((sel) => { clearSelection = sel })
-          if (!clearSelection) {
-            // Fallback: use sequence selection.
-            clearSelection = await clearClone.getSelection()
-          }
-          for (const item of existingItems) clearSelection!.addItem(item as VideoClipTrackItem)
-          const removeOk = this.tx(
-            project,
-            (c) => c.addAction(clearEditor.createRemoveItemsAction(
-              clearSelection!, false, this.ppro.Constants.MediaType.VIDEO, false,
-            )),
-            'Clear target track',
-          )
-          if (!removeOk) throw new Error('Premiere rejected the clear-track transaction.')
-        }
+      // 7. Build the switched cut by camera-disable, keeping every angle on its
+      //    own track. There is no programmatic razor, so for multi-segment cuts we
+      //    blade each camera track at the cut points by overwriting that camera's
+      //    OWN footage per interval (visually identical, but splits the clip).
+      //    With a single segment no blade is needed — the whole clip is the segment.
+      const coversInterval = (src: CameraSource, iv: { startFrame: number; endFrame: number }) => {
+        const kIn = iv.startFrame - src.clipStartFrame + src.clipInFrame
+        const kOut = iv.endFrame - src.clipStartFrame + src.clipInFrame
+        return kIn >= src.clipInFrame && kOut <= src.clipOutFrame
       }
-
-      // 8. Write cut intervals.
-      // Decide insert-vs-overwrite once: does the target track already exist on the clone?
-      const cloneTrackCount = await (await this.findSequenceByGuid(project, cloneId)).getVideoTrackCount()
-      const useInsertForFirstClip = det.targetTrackIndex >= cloneTrackCount
-
+      const needsBlade = intervals.length > 1
+      let bladed = false
       try {
-        let isFirstClip = true
-        for (const iv of intervals) {
-          phase = `write cut cam${iv.camera} @${iv.startFrame}`
-          // Re-fetch EVERY live handle right before use — UXP invalidates project,
-          // sequence, editor, and clip handles across each preceding transaction
-          // (BANANAS E4). Re-find by guid so a stale Sequence object never leaks in.
-          const srcSeq = await this.findSequenceByGuid(project, sequenceId)
-          const srcTrack = await srcSeq.getVideoTrack(
-            det.sources.find(s => s.camera === iv.camera)!.vIndex,
-          )
-          const srcItems = await srcTrack.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
-          const projItem = await (srcItems[0] as VideoClipTrackItem).getProjectItem()
-          const clip = this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
-
-          // Step 1: Set source in/out range.
-          const setOk = this.tx(
-            project,
-            (c) => c.addAction(clip.createSetInOutPointsAction(
-              toTick(iv.sourceInFrame),
-              toTick(iv.sourceOutFrame),
-            )),
-            `Set in/out cam${iv.camera}`,
-          )
-          if (!setOk) throw new Error(`Premiere rejected in/out for camera ${iv.camera}.`)
-
-          // Step 2: Place on target track. Re-fetch the clone's editor AFTER the
-          // setInOut transaction above — that transaction stales the prior editor.
-          const placeEditor = await this.ppro.SequenceEditor.getEditor(
-            await this.findSequenceByGuid(project, cloneId),
-          )
-          if (isFirstClip && useInsertForFirstClip) {
-            // Target track doesn't exist yet — use insert so Premiere auto-creates it.
-            const insertOk = this.tx(
-              project,
-              (c) => c.addAction(placeEditor.createInsertProjectItemAction(
-                projItem, toTick(iv.startFrame), det.targetTrackIndex, -1, true,
-              )),
-              `Insert cam${iv.camera} @${iv.startFrame}`,
-            )
-            if (!insertOk) throw new Error(`Premiere rejected insert for camera ${iv.camera} at frame ${iv.startFrame}.`)
-          } else {
-            const writeOk = this.tx(
-              project,
-              (c) => c.addAction(placeEditor.createOverwriteItemAction(
-                projItem, toTick(iv.startFrame), det.targetTrackIndex, -1,
-              )),
-              `Overwrite cam${iv.camera} @${iv.startFrame}`,
-            )
-            if (!writeOk) throw new Error(`Premiere rejected overwrite for camera ${iv.camera} at frame ${iv.startFrame}.`)
-          }
-          isFirstClip = false
-        }
-      } finally {
-        // 9. Restore source in/out points. Always runs.
-        // Re-fetch context and fresh clip handles — every handle from before the
-        // cut transactions is stale here (BANANAS E4).
-        phase = 'restore source in/out'
-        const restoreFailures: string[] = []
-        const rp = await this.ppro.Project.getActiveProject()
-        if (rp) {
-          const rs = await this.findSequenceByGuid(rp, sequenceId)
+        if (needsBlade) {
+          phase = 'blade camera tracks'
           for (const src of det.sources) {
-            const saved = savedState.get(src.camera)
-            if (!saved) continue
-            try {
-              const freshClip = await this.freshSourceClip(rs, src.vIndex)
-              const ok = this.tx(
-                rp,
-                (c) => c.addAction(freshClip.createSetInOutPointsAction(
-                  this.ppro.TickTime.createWithTicks(saved.inTicks),
-                  this.ppro.TickTime.createWithTicks(saved.outTicks),
-                )),
-                `Restore in/out cam${src.camera}`,
+            for (const iv of intervals) {
+              if (!coversInterval(src, iv)) continue
+              const kIn = iv.startFrame - src.clipStartFrame + src.clipInFrame
+              const kOut = iv.endFrame - src.clipStartFrame + src.clipInFrame
+              phase = `blade cam${src.camera} @${iv.startFrame}`
+              const origSeq = await this.findSequenceByGuid(project, sequenceId)
+              const clip = await this.freshSourceClip(origSeq, src.vIndex)
+              const setOk = this.tx(
+                project,
+                (c) => c.addAction(clip.createSetInOutPointsAction(toTick(kIn), toTick(kOut))),
+                `Set in/out cam${src.camera}`,
               )
-              if (!ok) restoreFailures.push(`Camera ${src.camera}: transaction rejected`)
-            } catch (e) {
-              restoreFailures.push(`Camera ${src.camera}: ${e instanceof Error ? e.message : String(e)}`)
+              if (!setOk) throw new Error(`Premiere rejected in/out for camera ${src.camera}.`)
+              bladed = true
+              const editor = await this.ppro.SequenceEditor.getEditor(await this.findSequenceByGuid(project, cloneId))
+              const projItem = await this.freshSourceProjectItem(origSeq, src.vIndex)
+              const writeOk = this.tx(
+                project,
+                (c) => c.addAction(editor.createOverwriteItemAction(projItem, toTick(iv.startFrame), src.vIndex, -1)),
+                `Blade cam${src.camera} @${iv.startFrame}`,
+              )
+              if (!writeOk) throw new Error(`Premiere rejected blade for camera ${src.camera} at frame ${iv.startFrame}.`)
             }
           }
         }
-        if (restoreFailures.length > 0) {
-          throw new Error(
-            `Auto-cut FAILED: could not restore original source in/out points.\n` +
-            `Affected cameras:\n${restoreFailures.map(f => `  • ${f}`).join('\n')}\n` +
-            `Check these clips in the Source Monitor and reset their in/out points manually.`,
-          )
+
+        // Disable every segment whose camera is not the focus for its interval.
+        // Re-fetch the track items fresh for each disable — each transaction stales
+        // the previously-read item handles (BANANAS E4).
+        for (const src of det.sources) {
+          for (const iv of intervals) {
+            if (iv.camera === src.camera || !coversInterval(src, iv)) continue
+            phase = `disable cam${src.camera} @${iv.startFrame}`
+            const cloneSeq = await this.findSequenceByGuid(project, cloneId)
+            const track = await cloneSeq.getVideoTrack(src.vIndex)
+            const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+            let target: VideoClipTrackItem | null = null
+            for (const item of items) {
+              const startF = this.tickToFrame(await item.getStartTime(), fr)
+              const endF = this.tickToFrame(await item.getEndTime(), fr)
+              if (startF <= iv.startFrame + 1 && iv.startFrame < endF) { target = item as VideoClipTrackItem; break }
+            }
+            if (!target) continue
+            const t = target
+            const disableOk = this.tx(
+              project,
+              (c) => c.addAction(t.createSetDisabledAction(true)),
+              `Disable cam${src.camera} @${iv.startFrame}`,
+            )
+            if (!disableOk) throw new Error(`Premiere rejected disable for camera ${src.camera} at frame ${iv.startFrame}.`)
+          }
+        }
+      } finally {
+        // 8. Restore source in/out points — only if blading mutated them.
+        if (bladed) {
+          phase = 'restore source in/out'
+          const restoreFailures: string[] = []
+          const rp = await this.ppro.Project.getActiveProject()
+          if (rp) {
+            const rs = await this.findSequenceByGuid(rp, sequenceId)
+            for (const src of det.sources) {
+              const saved = savedState.get(src.camera)
+              if (!saved) continue
+              try {
+                const freshClip = await this.freshSourceClip(rs, src.vIndex)
+                const ok = this.tx(
+                  rp,
+                  (c) => c.addAction(freshClip.createSetInOutPointsAction(
+                    this.ppro.TickTime.createWithTicks(saved.inTicks),
+                    this.ppro.TickTime.createWithTicks(saved.outTicks),
+                  )),
+                  `Restore in/out cam${src.camera}`,
+                )
+                if (!ok) restoreFailures.push(`Camera ${src.camera}: transaction rejected`)
+              } catch (e) {
+                restoreFailures.push(`Camera ${src.camera}: ${e instanceof Error ? e.message : String(e)}`)
+              }
+            }
+          }
+          if (restoreFailures.length > 0) {
+            throw new Error(
+              `Auto-cut FAILED: could not restore original source in/out points.\n` +
+              `Affected cameras:\n${restoreFailures.map(f => `  • ${f}`).join('\n')}\n` +
+              `Check these clips in the Source Monitor and reset their in/out points manually.`,
+            )
+          }
         }
       }
 
-      // 10. Activate the clone.
+      // 9. Activate the clone.
       phase = 'activate clone'
       await project.setActiveSequence(await this.findSequenceByGuid(project, cloneId))
 
