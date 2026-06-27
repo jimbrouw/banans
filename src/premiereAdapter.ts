@@ -785,6 +785,46 @@ class UxpPremiereAdapter implements PremiereAdapter {
 
     return cloneName
   }
+
+  /**
+   * Assemble a clean cold-open clip from [startSeconds, endSeconds] as a new
+   * subsequence. createSubsequence carries every video AND audio track for the
+   * in/out range, so the result is a self-contained ~30s clip with synced sound.
+   */
+  async assembleColdOpenClip(sequenceId: string, startSeconds: number, endSeconds: number): Promise<string> {
+    let { project, sequence } = await this.context()
+    if (sequence.guid.toString() !== sequenceId) {
+      throw new Error('Active sequence changed. Re-open the source sequence before assembling.')
+    }
+    if (!(endSeconds > startSeconds)) throw new Error('Cold open end must be after its start.')
+
+    // Set the sequence in/out to the hook range.
+    const inT = this.ppro.TickTime.createWithSeconds(startSeconds)
+    const outT = this.ppro.TickTime.createWithSeconds(endSeconds)
+    const setOk = this.tx(
+      project,
+      (c) => {
+        c.addAction(sequence.createSetInPointAction(inT))
+        c.addAction(sequence.createSetOutPointAction(outT))
+      },
+      'RoughCut cold open in/out',
+    )
+    if (!setOk) throw new Error('Premiere rejected setting the cold open in/out points.')
+
+    // Re-fetch the sequence (the set-in/out transaction stales the handle), then
+    // make a subsequence of the in/out range across all tracks.
+    ;({ project, sequence } = await this.context())
+    const sub = await sequence.createSubsequence(true)
+    if (!sub) throw new Error('Premiere could not create the cold open subsequence.')
+
+    const baseName = sequence.name.replace(/ - Cold Open( \d+)?$/, '')
+    const name = `${baseName} - Cold Open`
+    const subItem = await sub.getProjectItem()
+    this.tx(project, (c) => c.addAction(subItem.createSetNameAction(name)), 'Rename cold open subsequence')
+
+    await project.setActiveSequence(await this.findSequenceByGuid(project, sub.guid.toString()))
+    return name
+  }
 }
 
 export function createPremiereAdapter(): PremiereAdapter {

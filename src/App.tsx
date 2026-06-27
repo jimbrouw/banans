@@ -8,6 +8,8 @@ import type { AnalysisSettings, EditDecision, MarkerType, Platform, SequenceInfo
 import type { CutPoint, DetectedSources } from './cutEngine'
 import { getAutopilotOptions } from './autopilot'
 import type { AutopilotOption } from './autopilot'
+import { findColdOpens } from './coldOpenFinder'
+import type { ColdOpenOption } from './coldOpenFinder'
 import './App.css'
 
 const markerMeta: Record<MarkerType, { name: string; color: string; icon: typeof Sparkles }> = {
@@ -52,6 +54,11 @@ export default function App() {
   const [selectedAutopilotOptionId, setSelectedAutopilotOptionId] = useState<string | null>(null)
   const [markerFilter, setMarkerFilter] = useState<'all' | 'promo' | 'shorts' | 'audio' | 'trims'>('all')
   const [sortBest, setSortBest] = useState(false)
+  const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem('roughcut.anthropicKey') ?? '' } catch { return '' } })
+  const [coldOpens, setColdOpens] = useState<ColdOpenOption[]>([])
+  const [coldOpenStatus, setColdOpenStatus] = useState<'idle' | 'finding' | 'done' | 'assembling' | 'error'>('idle')
+  const [coldOpenError, setColdOpenError] = useState('')
+  const [coldOpenResult, setColdOpenResult] = useState('')
   const selected = decisions.filter((d) => d.selected)
   const counts = useMemo(() => Object.keys(markerMeta).map((type) => ({ type: type as MarkerType, count: decisions.filter((d) => d.type === type).length })).filter((x) => x.count), [decisions])
   const filteredDecisions = useMemo(() => {
@@ -196,26 +203,30 @@ export default function App() {
     }
   }
 
-  const assembleColdOpen = async () => {
-    if (!autoCutDet) {
-      setError('Please run "Detect Cameras" first in the Auto-Cut section so we know your camera offsets.')
-      return
-    }
-    const selectedHooks = selected.filter(d => d.type === 'social_hook')
-    if (selectedHooks.length === 0) {
-      setError('Please select at least one Inquisitive Hook in the results below.')
-      return
-    }
+  const saveApiKey = (key: string) => { setApiKey(key); try { localStorage.setItem('roughcut.anthropicKey', key) } catch { /* localStorage unavailable */ } }
+
+  const findColdOpenHooks = async () => {
+    if (!segments.length) { setColdOpenError('Analyze a transcript first so there is something to scan.'); setColdOpenStatus('error'); return }
     try {
-      setError('')
-      setStatus('creating')
-      const name = await premiere.assembleSocialSequence(sequence.id, selectedHooks, mappings, autoCutDet)
-      setAutoCutResult(name)
-      setAutoCutStatus('done')
-      setStatus('created')
+      setColdOpenError(''); setColdOpenResult(''); setColdOpenStatus('finding')
+      const options = await findColdOpens(segments, apiKey)
+      setColdOpens(options)
+      setColdOpenStatus('done')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
-      setStatus('error')
+      setColdOpenError(reason instanceof Error ? reason.message : String(reason))
+      setColdOpenStatus('error')
+    }
+  }
+
+  const assembleColdOpenFromOption = async (option: ColdOpenOption) => {
+    try {
+      setColdOpenError(''); setColdOpenResult(''); setColdOpenStatus('assembling')
+      const name = await premiere.assembleColdOpenClip(sequence.id, option.startSeconds, option.endSeconds)
+      setColdOpenResult(name)
+      setColdOpenStatus('done')
+    } catch (reason) {
+      setColdOpenError(reason instanceof Error ? reason.message : String(reason))
+      setColdOpenStatus('error')
     }
   }
 
@@ -311,11 +322,29 @@ export default function App() {
             </Press>
           })}</div>
           <Press className="rough-cut" disabled={!selected.length || status === 'creating'} onClick={createRoughCut}><Sparkles size={19} />{status === 'creating' ? 'Building review cut...' : status === 'created' ? 'Marked review cut created' : `Create Marked Review Cut (${selected.length})`}</Press>
-          {selected.some(d => d.type === 'social_hook') && (
-            <Press className="rough-cut" style={{ marginTop: 8, backgroundColor: '#b57bed', color: '#fff' }} disabled={status === 'creating'} onClick={assembleColdOpen}>
-              <Sparkles size={19} />{status === 'creating' ? 'Assembling Cold Open...' : `Assemble YouTube Cold Open (${selected.filter(d => d.type === 'social_hook').length})`}
+
+          <div className="cold-open">
+            <div className="cold-open-head"><Sparkles size={16} /><strong>YouTube Cold Open Finder</strong><span className="hint">AI · Claude</span></div>
+            <input className="api-key" type="password" autoComplete="off" placeholder="Anthropic API key (sk-ant-…)" value={apiKey} onChange={(e) => saveApiKey(e.target.value)} />
+            <Press className="rough-cut" style={{ marginTop: 8, backgroundColor: '#b57bed', color: '#fff' }} disabled={coldOpenStatus === 'finding' || coldOpenStatus === 'assembling'} onClick={findColdOpenHooks}>
+              <Sparkles size={19} />{coldOpenStatus === 'finding' ? 'Finding best hooks…' : 'Find 3 Cold Opens (AI)'}
             </Press>
-          )}
+            {coldOpens.map((opt, i) => (
+              <div className="cold-open-card" key={i}>
+                <div className="cold-open-card-head">
+                  <span className="cold-open-rank">#{i + 1}</span>
+                  <strong>{opt.archetype}</strong>
+                  <span className="cold-open-time">{formatTime(opt.startSeconds)}–{formatTime(opt.endSeconds)} · {Math.max(0, Math.round(opt.endSeconds - opt.startSeconds))}s</span>
+                </div>
+                <p className="cold-open-script">“{opt.script}”</p>
+                <p className="cold-open-why"><strong>Why:</strong> {opt.justification}</p>
+                <Press className="text-button" disabled={coldOpenStatus === 'assembling'} onClick={() => assembleColdOpenFromOption(opt)}><Scissors size={14} /> {coldOpenStatus === 'assembling' ? 'Assembling…' : 'Assemble this clip (with audio)'}</Press>
+              </div>
+            ))}
+            {coldOpenResult && <div className="success"><Check size={16} /> Created “{coldOpenResult}” — open it in the Project panel.</div>}
+            {coldOpenStatus === 'error' && coldOpenError && <div className="error"><AlertTriangle size={15} /> {coldOpenError}</div>}
+          </div>
+
           <p className="safety"><Lock size={14} /> Original sequence stays untouched</p>
           {status === 'created' && <div className="success"><Check size={16} /> Action completed. Check the Project panel for your new sequence.</div>}
         </section>}

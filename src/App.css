@@ -218,6 +218,22 @@ select:hover { border-color: #465153; }
 .autopilot-section h3 { margin: 0 0 6px; }
 .autopilot-section { border-top: 1px solid var(--line-soft); padding-top: 12px; margin-top: 12px; }
 
+.cold-open { margin-top: 15px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+.cold-open-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; color: #d8c4f2; }
+.cold-open-head strong { font-size: 13px; font-weight: 680; }
+.cold-open-head .hint { margin-left: auto; }
+.api-key { width: 100%; color: #e5e8e7; background-color: var(--surface-low); border: 1px solid #343d3f; border-radius: 7px; padding: 9px 11px; font-size: 12px; outline: none; box-shadow: var(--inset); }
+.api-key:focus { border-color: #b57bed; }
+.cold-open-card { margin-top: 9px; padding: 11px 12px; border: 1px solid #3a3350; border-radius: 8px; background-color: rgba(181, 123, 237, .06); }
+.cold-open-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.cold-open-rank { font-size: 11px; font-weight: 700; color: #b57bed; }
+.cold-open-card-head strong { font-size: 12px; }
+.cold-open-time { margin-left: auto; font-size: 10px; color: var(--muted); }
+.cold-open-script { margin: 0 0 6px; font-size: 12px; line-height: 1.45; color: var(--text); }
+.cold-open-why { margin: 0 0 8px; font-size: 11px; line-height: 1.4; color: var(--muted); }
+.cold-open-why strong { color: #c8a8ee; }
+.cold-open-card .text-button { color: #c8a8ee; display: inline-flex; align-items: center; gap: 5px; }
+
 @media (max-width: 580px) {
   .app-shell { padding: 0; }
   .panel { width: 100%; min-height: 100vh; border: 0; border-radius: 0; box-shadow: none; }

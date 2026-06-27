@@ -60,4 +60,5 @@ export interface PremiereAdapter {
   detectSources(): Promise<DetectedSources>
   applyCutMap(sequenceId: string, cuts: CutPoint[], det: DetectedSources, endFrame: number): Promise<string>
   assembleSocialSequence(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[], det: DetectedSources): Promise<string>
+  assembleColdOpenClip(sequenceId: string, startSeconds: number, endSeconds: number): Promise<string>
 }
