@@ -27,11 +27,15 @@ const markerMeta: Record<MarkerType, { name: string; color: string; icon: typeof
 const platformLabel: Record<Platform, string> = { shorts: 'YT', reels: 'IG', tiktok: 'TT', stories: 'Story', audiogram: 'Audio' }
 const platformColor: Record<Platform, string> = { shorts: '#c4302b', reels: '#c837ab', tiktok: '#00c8c8', stories: '#f77737', audiogram: '#52cbc7' }
 
-// UXP doesn't navigate <a href>; open URLs through the shell, fall back to window.open.
+// UXP doesn't navigate <a href>; open URLs through the shell (needs the
+// launchProcess manifest permission), fall back to window.open in the browser.
 function openExternal(url: string) {
   try {
-    const uxp = getRuntimeRequire()?.('uxp') as { shell?: { openExternal?: (u: string) => void } } | undefined
-    if (uxp?.shell?.openExternal) { uxp.shell.openExternal(url); return }
+    const uxp = getRuntimeRequire()?.('uxp') as { shell?: { openExternal?: (u: string) => Promise<unknown> | void } } | undefined
+    if (uxp?.shell?.openExternal) {
+      Promise.resolve(uxp.shell.openExternal(url)).catch(() => { try { window.open(url, '_blank') } catch { /* no-op */ } })
+      return
+    }
   } catch { /* fall through to window.open */ }
   try { window.open(url, '_blank') } catch { /* no-op */ }
 }

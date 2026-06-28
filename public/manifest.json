@@ -12,6 +12,9 @@
     "localFileSystem": "request",
     "network": {
       "domains": ["https://api.anthropic.com"]
+    },
+    "launchProcess": {
+      "schemes": ["https"]
     }
   },
   "entrypoints": [
