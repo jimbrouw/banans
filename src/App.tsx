@@ -4,6 +4,7 @@ import { AlertTriangle, Camera, Check, ChevronDown, Clapperboard, Download, File
 import { analyseTranscript } from './analyse'
 import { sequence as demoSequence } from './mockPremiere'
 import { isPremiereHost, premiere } from './premiereAdapter'
+import { getRuntimeRequire } from './hostRuntime'
 import type { AnalysisSettings, EditDecision, MarkerType, Platform, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
 import type { CutPoint, DetectedSources } from './cutEngine'
 import { getAutopilotOptions } from './autopilot'
@@ -25,6 +26,15 @@ const markerMeta: Record<MarkerType, { name: string; color: string; icon: typeof
 
 const platformLabel: Record<Platform, string> = { shorts: 'YT', reels: 'IG', tiktok: 'TT', stories: 'Story', audiogram: 'Audio' }
 const platformColor: Record<Platform, string> = { shorts: '#c4302b', reels: '#c837ab', tiktok: '#00c8c8', stories: '#f77737', audiogram: '#52cbc7' }
+
+// UXP doesn't navigate <a href>; open URLs through the shell, fall back to window.open.
+function openExternal(url: string) {
+  try {
+    const uxp = getRuntimeRequire()?.('uxp') as { shell?: { openExternal?: (u: string) => void } } | undefined
+    if (uxp?.shell?.openExternal) { uxp.shell.openExternal(url); return }
+  } catch { /* fall through to window.open */ }
+  try { window.open(url, '_blank') } catch { /* no-op */ }
+}
 
 const formatTime = (seconds: number) => new Date(seconds * 1000).toISOString().slice(11, 19)
 const formatDuration = (start: number, end?: number) => { if (!end) return ''; const s = Math.round(end - start); return s >= 60 ? `${Math.floor(s / 60)}m${s % 60}s` : `${s}s` }
@@ -325,6 +335,7 @@ export default function App() {
 
           <div className="cold-open">
             <div className="cold-open-head"><Sparkles size={16} /><strong>YouTube Cold Open Finder</strong><span className="hint">AI · Claude</span></div>
+            <a className="api-key-link" role="link" tabIndex={0} onClick={() => openExternal('https://console.anthropic.com/settings/keys')}>Get an API key at console.anthropic.com →</a>
             <input className="api-key" type="password" autoComplete="off" placeholder="Anthropic API key (sk-ant-…)" value={apiKey} onChange={(e) => saveApiKey(e.target.value)} />
             <Press className="rough-cut" style={{ marginTop: 8, backgroundColor: '#b57bed', color: '#fff' }} disabled={coldOpenStatus === 'finding' || coldOpenStatus === 'assembling'} onClick={findColdOpenHooks}>
               <Sparkles size={19} />{coldOpenStatus === 'finding' ? 'Finding best hooks…' : 'Find 3 Cold Opens (AI)'}

@@ -222,6 +222,8 @@ select:hover { border-color: #465153; }
 .cold-open-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; color: #d8c4f2; }
 .cold-open-head strong { font-size: 13px; font-weight: 680; }
 .cold-open-head .hint { margin-left: auto; }
+.api-key-link { display: inline-block; margin-bottom: 7px; color: #c8a8ee; font-size: 11px; cursor: pointer; text-decoration: underline; }
+.api-key-link:hover { color: #d8c4f2; }
 .api-key { width: 100%; color: #e5e8e7; background-color: var(--surface-low); border: 1px solid #343d3f; border-radius: 7px; padding: 9px 11px; font-size: 12px; outline: none; box-shadow: var(--inset); }
 .api-key:focus { border-color: #b57bed; }
 .cold-open-card { margin-top: 9px; padding: 11px 12px; border: 1px solid #3a3350; border-radius: 8px; background-color: rgba(181, 123, 237, .06); }
