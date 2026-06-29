@@ -1,17 +1,11 @@
-// coldOpenAssembler.ts — Energy Reset multi-cam assembly for the cold open.
+// coldOpenAssembler.ts — Pure Energy Reset cut-map logic for the cold open.
 //
-// Takes a ColdOpenOption (chosen by the user from coldOpenFinder results) and a
-// DetectedSources snapshot, and builds a cut, paced cold-open sequence:
-//
-//   1. Sets the sequence in/out to the hook window.
-//   2. Creates a subsequence (carries all tracks with synced audio).
-//   3. Applies the Energy Reset shot list as actual camera cuts on the
-//      subsequence using the proven blade+disable engine from applyCutMap.
-//
-// If the option has no shots array (e.g. very short window), falls back to the
-// original flat-subsequence path (no internal cuts).
+// Translates a Claude shot list (ColdOpenShot[]) into a CutPoint[] that the
+// Premiere adapter applies to the cold-open subsequence. No Premiere imports —
+// fully unit-testable. The adapter (premiereAdapter.assembleColdOpenClip) detects
+// cameras on the subsequence and feeds those sources in here.
 
-import type { ColdOpenOption, ColdOpenShot } from './coldOpenFinder'
+import type { ColdOpenShot } from './coldOpenFinder'
 import type { CutPoint, DetectedSources } from './cutEngine'
 import { resolveCameraNum } from './autopilot'
 
@@ -88,21 +82,4 @@ export function shotsToEnergyResetCuts(
   }
 
   return cuts
-}
-
-/**
- * Verify that a ColdOpenOption's shot list has at least one meaningful cut
- * (i.e. it would produce more than 1 distinct camera angle after enforcement).
- * Used to decide whether to run the Energy Reset path or fall back to flat.
- */
-export function hasEnergyResetCuts(
-  option: ColdOpenOption,
-  sources: DetectedSources['sources'],
-  frameRate: number,
-): boolean {
-  const windowSeconds = option.endSeconds - option.startSeconds
-  if (windowSeconds < MIN_SHOT_SECONDS * 2) return false
-  const cuts = shotsToEnergyResetCuts(option.shots, windowSeconds, sources, frameRate)
-  const distinctCameras = new Set(cuts.map((c) => c.camera)).size
-  return distinctCameras > 1
 }

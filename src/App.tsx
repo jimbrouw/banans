@@ -11,7 +11,6 @@ import { getAutopilotOptions } from './autopilot'
 import type { AutopilotOption } from './autopilot'
 import { findColdOpens } from './coldOpenFinder'
 import type { ColdOpenOption } from './coldOpenFinder'
-import { hasEnergyResetCuts, shotsToEnergyResetCuts } from './coldOpenAssembler'
 
 import './App.css'
 
@@ -237,32 +236,13 @@ export default function App() {
   const assembleColdOpenFromOption = async (option: ColdOpenOption) => {
     try {
       setColdOpenError(''); setColdOpenResult(''); setColdOpenStatus('assembling')
-
-      // Auto-detect camera sources if not already done — Energy Reset cuts need
-      // them. Silently ignore detection failures (single-cam, wrong sequence
-      // type, etc.) and fall back to a flat clip lift.
-      let det = autoCutDet
-      if (!det && option.shots.length > 0) {
-        try {
-          det = await premiere.detectSources()
-          setAutoCutDet(det)
-        } catch {
-          det = null
-        }
-      }
-
-      let cuts = undefined
-      if (det && hasEnergyResetCuts(option, det.sources, det.frameRate)) {
-        const windowSeconds = option.endSeconds - option.startSeconds
-        cuts = shotsToEnergyResetCuts(option.shots, windowSeconds, det.sources, det.frameRate)
-      }
-
+      // The adapter handles everything: lifts the window with synced audio, then
+      // detects cameras on the subsequence and applies the Energy Reset shot plan.
       const name = await premiere.assembleColdOpenClip(
         sequence.id,
         option.startSeconds,
         option.endSeconds,
-        cuts,
-        det ?? undefined,
+        option.shots,
       )
       setColdOpenResult(name)
       setColdOpenStatus('done')

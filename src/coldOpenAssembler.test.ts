@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { shotToCamera, shotsToEnergyResetCuts, hasEnergyResetCuts } from './coldOpenAssembler'
-import type { ColdOpenOption, ColdOpenShot } from './coldOpenFinder'
+import { shotToCamera, shotsToEnergyResetCuts } from './coldOpenAssembler'
+import type { ColdOpenShot } from './coldOpenFinder'
 import type { CameraSource } from './cutEngine'
 
 const sources: CameraSource[] = [
@@ -86,41 +86,14 @@ describe('shotsToEnergyResetCuts', () => {
     const cuts = shotsToEnergyResetCuts(shots, windowSeconds, sources, frameRate)
     expect(cuts.every(c => Number.isInteger(c.frame) && c.frame >= 0)).toBe(true)
   })
-})
 
-describe('hasEnergyResetCuts', () => {
-  const frameRate = 30
-  const makeOption = (shots: ColdOpenShot[], startSeconds = 0, endSeconds = 25): ColdOpenOption => ({
-    startSeconds, endSeconds, archetype: 'In Media Res', script: 'test', justification: 'test', shots,
-  })
-
-  it('returns true when shot list produces multiple cameras', () => {
-    const option = makeOption([
-      { offsetSeconds: 0, shot: 'guest_tight' },
-      { offsetSeconds: 4, shot: 'host_reaction' },
-      { offsetSeconds: 10, shot: 'wide' },
-    ])
-    expect(hasEnergyResetCuts(option, sources, frameRate)).toBe(true)
-  })
-
-  it('returns false when shots array is empty', () => {
-    expect(hasEnergyResetCuts(makeOption([]), sources, frameRate)).toBe(false)
-  })
-
-  it('returns false when window is too short for multiple cuts', () => {
-    const option = makeOption([
-      { offsetSeconds: 0, shot: 'guest_tight' },
-      { offsetSeconds: 4, shot: 'host_reaction' },
-    ], 0, 5) // 5s window, 3s min → only 1 valid cut
-    expect(hasEnergyResetCuts(option, sources, frameRate)).toBe(false)
-  })
-
-  it('returns false when all shots map to the same camera', () => {
-    const option = makeOption([
+  it('collapses to a single cut when all shots map to the same camera', () => {
+    const sameCam: ColdOpenShot[] = [
       { offsetSeconds: 0, shot: 'guest_tight' },
       { offsetSeconds: 5, shot: 'guest_tight' },
       { offsetSeconds: 10, shot: 'guest_tight' },
-    ])
-    expect(hasEnergyResetCuts(option, sources, frameRate)).toBe(false)
+    ]
+    const cuts = shotsToEnergyResetCuts(sameCam, windowSeconds, sources, frameRate)
+    expect(new Set(cuts.map(c => c.camera)).size).toBe(1)
   })
 })
