@@ -239,6 +239,45 @@ select:hover { border-color: #465153; }
 .cold-open-shot-pill { font-size: 10px; padding: 2px 7px; border-radius: 10px; background: rgba(181,123,237,.15); color: #c8a8ee; white-space: nowrap; }
 .cold-open-detect-hint { margin: 0 0 6px; font-size: 11px; color: #ed7a13; }
 
+@keyframes thinking-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+@keyframes thinking-pulse {
+  0%, 100% { opacity: .35; }
+  50%       { opacity: 1; }
+}
+.cold-open-thinking { margin-top: 12px; }
+.cold-open-thinking-bar {
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(181,123,237,.15);
+  overflow: hidden;
+  position: relative;
+  margin-bottom: 10px;
+}
+.cold-open-thinking-bar::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  width: 25%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, #b57bed, transparent);
+  animation: thinking-sweep 1.4s ease-in-out infinite;
+}
+.cold-open-thinking-steps { display: flex; gap: 6px; flex-wrap: wrap; }
+.thinking-step {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 10px;
+  border: 1px solid rgba(181,123,237,.25);
+  color: rgba(181,123,237,.4);
+  animation: thinking-pulse 2.4s ease-in-out infinite;
+}
+.thinking-step:nth-child(2) { animation-delay: .8s; }
+.thinking-step:nth-child(3) { animation-delay: 1.6s; }
+.thinking-step.active { color: #c8a8ee; border-color: rgba(181,123,237,.6); animation: none; }
+
 @media (max-width: 580px) {
   .app-shell { padding: 0; }
   .panel { width: 100%; min-height: 100vh; border: 0; border-radius: 0; box-shadow: none; }

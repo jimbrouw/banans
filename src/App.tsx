@@ -370,8 +370,18 @@ export default function App() {
             <a className="api-key-link" role="link" tabIndex={0} onClick={() => openExternal('https://console.anthropic.com/settings/keys')}>Get an API key at console.anthropic.com →</a>
             <input className="api-key" type="password" autoComplete="off" placeholder="Anthropic API key (sk-ant-…)" value={apiKey} onChange={(e) => saveApiKey(e.target.value)} />
             <Press className="rough-cut" style={{ marginTop: 8, backgroundColor: '#b57bed', color: '#fff' }} disabled={coldOpenStatus === 'finding' || coldOpenStatus === 'assembling'} onClick={findColdOpenHooks}>
-              <Sparkles size={19} />{coldOpenStatus === 'finding' ? 'Finding best hooks…' : 'Find 3 Cold Opens (AI)'}
+              <Sparkles size={19} />{coldOpenStatus === 'finding' ? 'Analysing transcript…' : 'Find 3 Cold Opens (AI)'}
             </Press>
+            {coldOpenStatus === 'finding' && (
+              <div className="cold-open-thinking">
+                <div className="cold-open-thinking-bar" />
+                <div className="cold-open-thinking-steps">
+                  <span className="thinking-step active">Reading transcript</span>
+                  <span className="thinking-step">Scoring hooks</span>
+                  <span className="thinking-step">Ranking options</span>
+                </div>
+              </div>
+            )}
             {coldOpens.map((opt, i) => (
               <div className="cold-open-card" key={i}>
                 <div className="cold-open-card-head">
