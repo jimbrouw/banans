@@ -11,6 +11,7 @@ import { getAutopilotOptions } from './autopilot'
 import type { AutopilotOption } from './autopilot'
 import { findColdOpens } from './coldOpenFinder'
 import type { ColdOpenOption } from './coldOpenFinder'
+import { hasEnergyResetCuts, shotsToEnergyResetCuts } from './coldOpenAssembler'
 import './App.css'
 
 const markerMeta: Record<MarkerType, { name: string; color: string; icon: typeof Sparkles }> = {
@@ -235,7 +236,24 @@ export default function App() {
   const assembleColdOpenFromOption = async (option: ColdOpenOption) => {
     try {
       setColdOpenError(''); setColdOpenResult(''); setColdOpenStatus('assembling')
-      const name = await premiere.assembleColdOpenClip(sequence.id, option.startSeconds, option.endSeconds)
+
+      // Energy Reset: build the camera cut list from the shot plan when we have
+      // detected sources and more than one angle in the shot list.
+      let cuts = undefined
+      let det = undefined
+      if (autoCutDet && hasEnergyResetCuts(option, autoCutDet.sources, autoCutDet.frameRate)) {
+        const windowSeconds = option.endSeconds - option.startSeconds
+        cuts = shotsToEnergyResetCuts(option.shots, windowSeconds, autoCutDet.sources, autoCutDet.frameRate)
+        det = autoCutDet
+      }
+
+      const name = await premiere.assembleColdOpenClip(
+        sequence.id,
+        option.startSeconds,
+        option.endSeconds,
+        cuts,
+        det,
+      )
       setColdOpenResult(name)
       setColdOpenStatus('done')
     } catch (reason) {
@@ -344,19 +362,33 @@ export default function App() {
             <Press className="rough-cut" style={{ marginTop: 8, backgroundColor: '#b57bed', color: '#fff' }} disabled={coldOpenStatus === 'finding' || coldOpenStatus === 'assembling'} onClick={findColdOpenHooks}>
               <Sparkles size={19} />{coldOpenStatus === 'finding' ? 'Finding best hooks…' : 'Find 3 Cold Opens (AI)'}
             </Press>
-            {coldOpens.map((opt, i) => (
-              <div className="cold-open-card" key={i}>
-                <div className="cold-open-card-head">
-                  <span className="cold-open-rank">#{i + 1}</span>
-                  <strong>{opt.archetype}</strong>
-                  <span className="cold-open-time">{formatTime(opt.startSeconds)}–{formatTime(opt.endSeconds)} · {Math.max(0, Math.round(opt.endSeconds - opt.startSeconds))}s</span>
+            {coldOpens.map((opt, i) => {
+              const hasEnergyReset = autoCutDet ? hasEnergyResetCuts(opt, autoCutDet.sources, autoCutDet.frameRate) : false
+              return (
+                <div className="cold-open-card" key={i}>
+                  <div className="cold-open-card-head">
+                    <span className="cold-open-rank">#{i + 1}</span>
+                    <strong>{opt.archetype}</strong>
+                    <span className="cold-open-time">{formatTime(opt.startSeconds)}–{formatTime(opt.endSeconds)} · {Math.max(0, Math.round(opt.endSeconds - opt.startSeconds))}s</span>
+                  </div>
+                  <p className="cold-open-script">"{opt.script}"</p>
+                  <p className="cold-open-why"><strong>Why:</strong> {opt.justification}</p>
+                  {opt.shots.length > 0 && (
+                    <div className="cold-open-shots">
+                      {opt.shots.map((s, si) => (
+                        <span key={si} className="cold-open-shot-pill">
+                          {s.offsetSeconds.toFixed(0)}s · {s.shot.replace('_', ' ')}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <Press className="text-button" disabled={coldOpenStatus === 'assembling'} onClick={() => assembleColdOpenFromOption(opt)}>
+                    <Scissors size={14} /> {coldOpenStatus === 'assembling' ? 'Assembling…' : hasEnergyReset ? 'Assemble this clip (with audio)' : 'Assemble this clip (with audio)'}
+                  </Press>
                 </div>
-                <p className="cold-open-script">“{opt.script}”</p>
-                <p className="cold-open-why"><strong>Why:</strong> {opt.justification}</p>
-                <Press className="text-button" disabled={coldOpenStatus === 'assembling'} onClick={() => assembleColdOpenFromOption(opt)}><Scissors size={14} /> {coldOpenStatus === 'assembling' ? 'Assembling…' : 'Assemble this clip (with audio)'}</Press>
-              </div>
-            ))}
-            {coldOpenResult && <div className="success"><Check size={16} /> Created “{coldOpenResult}” — open it in the Project panel.</div>}
+              )
+            })}
+            {coldOpenResult && <div className="success"><Check size={16} /> Created "{coldOpenResult}" — open it in the Project panel.</div>}
             {coldOpenStatus === 'error' && coldOpenError && <div className="error"><AlertTriangle size={15} /> {coldOpenError}</div>}
           </div>
 

@@ -72,8 +72,8 @@ export class MockPremiereAdapter implements PremiereAdapter {
     await wait(500)
     return 'Episode 042 - Guest Interview - Cold Open'
   }
-  async assembleColdOpenClip(sequenceId: string, startSeconds: number, endSeconds: number) {
-    void sequenceId; void startSeconds; void endSeconds
+  async assembleColdOpenClip(sequenceId: string, startSeconds: number, endSeconds: number, cuts?: unknown, det?: unknown) {
+    void sequenceId; void startSeconds; void endSeconds; void cuts; void det
     await wait(500)
     return 'Episode 042 - Guest Interview - Cold Open'
   }

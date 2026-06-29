@@ -235,6 +235,8 @@ select:hover { border-color: #465153; }
 .cold-open-why { margin: 0 0 8px; font-size: 11px; line-height: 1.4; color: var(--muted); }
 .cold-open-why strong { color: #c8a8ee; }
 .cold-open-card .text-button { color: #c8a8ee; display: inline-flex; align-items: center; gap: 5px; }
+.cold-open-shots { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 8px; }
+.cold-open-shot-pill { font-size: 10px; padding: 2px 7px; border-radius: 10px; background: rgba(181,123,237,.15); color: #c8a8ee; white-space: nowrap; }
 
 @media (max-width: 580px) {
   .app-shell { padding: 0; }

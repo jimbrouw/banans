@@ -787,11 +787,21 @@ class UxpPremiereAdapter implements PremiereAdapter {
   }
 
   /**
-   * Assemble a clean cold-open clip from [startSeconds, endSeconds] as a new
-   * subsequence. createSubsequence carries every video AND audio track for the
-   * in/out range, so the result is a self-contained ~30s clip with synced sound.
+   * Assemble a cold-open clip from [startSeconds, endSeconds] as a new subsequence.
+   * createSubsequence(true) carries every video AND audio track for the in/out range,
+   * giving a self-contained clip with synced audio.
+   *
+   * If `cuts` and `det` are supplied, the Energy Reset multi-cam cut list is applied
+   * to the subsequence after creation (blade + disable pattern, same as applyCutMap).
+   * Without them the result is a flat, uncut lift of the window.
    */
-  async assembleColdOpenClip(sequenceId: string, startSeconds: number, endSeconds: number): Promise<string> {
+  async assembleColdOpenClip(
+    sequenceId: string,
+    startSeconds: number,
+    endSeconds: number,
+    cuts?: CutPoint[],
+    det?: DetectedSources,
+  ): Promise<string> {
     let { project, sequence } = await this.context()
     if (sequence.guid.toString() !== sequenceId) {
       throw new Error('Active sequence changed. Re-open the source sequence before assembling.')
@@ -822,7 +832,30 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const subItem = await sub.getProjectItem()
     this.tx(project, (c) => c.addAction(subItem.createSetNameAction(name)), 'Rename cold open subsequence')
 
-    await project.setActiveSequence(await this.findSequenceByGuid(project, sub.guid.toString()))
+    // Activate the subsequence so applyCutMap targets it.
+    const subId = sub.guid.toString()
+    await project.setActiveSequence(await this.findSequenceByGuid(project, subId))
+
+    // Energy Reset: apply the shot-list cut map to the subsequence when provided.
+    if (cuts && cuts.length > 1 && det) {
+      const windowFrames = Math.round((endSeconds - startSeconds) * det.frameRate)
+      // The subsequence starts at 0; shift the detection fingerprint to match.
+      const subDet: DetectedSources = {
+        ...det,
+        sequenceId: subId,
+        fingerprint: '',   // skip fingerprint check — we just created this subsequence
+        totalFrames: windowFrames,
+      }
+      try {
+        await this.applyCutMap(subId, cuts, subDet, windowFrames)
+      } catch (e) {
+        // Camera cuts failed — the subsequence still exists and is playable as a
+        // flat clip. Surface the error as a warning in the return value rather than
+        // blowing up the whole operation.
+        return `${name} (camera cuts failed: ${e instanceof Error ? e.message : String(e)})`
+      }
+    }
+
     return name
   }
 }
