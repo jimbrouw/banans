@@ -382,8 +382,11 @@ export default function App() {
                       ))}
                     </div>
                   )}
+                  {opt.shots.length > 0 && !autoCutDet && (
+                    <p className="cold-open-detect-hint">Detect Cameras first to apply Energy Reset cuts</p>
+                  )}
                   <Press className="text-button" disabled={coldOpenStatus === 'assembling'} onClick={() => assembleColdOpenFromOption(opt)}>
-                    <Scissors size={14} /> {coldOpenStatus === 'assembling' ? 'Assembling…' : hasEnergyReset ? 'Assemble this clip (with audio)' : 'Assemble this clip (with audio)'}
+                    <Scissors size={14} /> {coldOpenStatus === 'assembling' ? 'Assembling…' : hasEnergyReset ? 'Assemble with Energy Reset cuts' : 'Assemble this clip (with audio)'}
                   </Press>
                 </div>
               )
