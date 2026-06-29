@@ -239,6 +239,18 @@ select:hover { border-color: #465153; }
 .cold-open-shot-pill { font-size: 10px; padding: 2px 7px; border-radius: 10px; background: rgba(181,123,237,.15); color: #c8a8ee; white-space: nowrap; }
 .cold-open-detect-hint { margin: 0 0 6px; font-size: 11px; color: #ed7a13; }
 
+.spike-panel { margin-top: 10px; padding: 10px 12px; border: 1px dashed rgba(255,255,255,.12); border-radius: 7px; }
+.spike-panel-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.spike-panel-head strong { font-size: 12px; }
+.spike-results { margin-top: 8px; display: flex; flex-direction: column; gap: 5px; }
+.spike-probe { padding: 5px 8px; border-radius: 5px; font-size: 11px; }
+.spike-probe.ok { background: rgba(105,213,154,.1); }
+.spike-probe.fail { background: rgba(237,122,19,.1); }
+.spike-probe-label { font-weight: 700; margin-right: 6px; }
+.spike-probe.ok .spike-probe-label { color: #69d59a; }
+.spike-probe.fail .spike-probe-label { color: #ed7a13; }
+.spike-probe-detail { color: var(--muted); }
+
 @keyframes thinking-sweep {
   0%   { transform: translateX(-100%); }
   100% { transform: translateX(400%); }

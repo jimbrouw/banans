@@ -860,6 +860,23 @@ class UxpPremiereAdapter implements PremiereAdapter {
       const rp = await this.ppro.Project.getActiveProject()
       if (!rp) return name
       await this.bladeAndDisableInPlace(rp, subId, intervals, subDet.sources, fr)
+
+      // Phase 2: Digital punch-ins — scale 100→103% on marked shots.
+      // Silently skip per-shot if keyframing fails (Probe A gates this at runtime).
+      try {
+        await this.applyPunchIns(rp, subId, shots, cuts, subDet.sources, fr, subDet.frameRate)
+      } catch {
+        // Non-fatal: punch-ins are enhancement, not core.
+      }
+
+      // Phase 3: J/L split edits — audio leads/trails at cut points.
+      // Silently skip if audio access fails (Probe B gates this at runtime).
+      try {
+        await this.applySplitEdits(rp, subId, shots, cuts, fr, subDet.frameRate)
+      } catch {
+        // Non-fatal: split edits are enhancement.
+      }
+
       return name
     } catch (e) {
       // Camera switching failed — the flat clip with synced audio still exists.
@@ -991,6 +1008,161 @@ class UxpPremiereAdapter implements PremiereAdapter {
             }
           }
         }
+      }
+    }
+  }
+
+  /**
+   * Phase 2 — Digital punch-ins. For each shot marked `punch: true`, find the
+   * video clip in the subsequence that corresponds to that interval and keyframe
+   * its Motion > Scale from 100% to 103% across the clip duration. This creates
+   * a subtle creep-in zoom that draws the eye without being jarring.
+   *
+   * Gated at runtime by Phase 0 Probe A (scale keyframing). If the Motion
+   * component or Scale param isn't accessible, the method throws and the caller
+   * silently eats the error — the clip is still cut and usable.
+   */
+  private async applyPunchIns(
+    project: Project,
+    seqId: string,
+    shots: ColdOpenShot[],
+    cuts: CutPoint[],
+    sources: CameraSource[],
+    fr: FrameRate,
+    frameRate: number,
+  ): Promise<void> {
+    const punchShots = shots.filter((s) => s.punch)
+    if (!punchShots.length) return
+
+    const seq = await this.findSequenceByGuid(project, seqId)
+    for (const shot of punchShots) {
+      // Find the cut point that corresponds to this shot.
+      const shotFrameApprox = Math.round(shot.offsetSeconds * frameRate)
+      const matchingCut = cuts.find((c) => Math.abs(c.frame - shotFrameApprox) < frameRate)
+      if (!matchingCut) continue
+
+      // Find the source for this camera.
+      const src = sources.find((s) => s.camera === matchingCut.camera)
+      if (!src) continue
+
+      const track = await seq.getVideoTrack(src.vIndex)
+      const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+      // Find the clip that starts at (approximately) this cut's frame.
+      let targetItem: VideoClipTrackItem | null = null
+      for (const it of items) {
+        const startFrame = this.tickToFrame(await it.getStartTime(), fr)
+        if (Math.abs(startFrame - matchingCut.frame) < 3) {
+          targetItem = it as VideoClipTrackItem
+          break
+        }
+      }
+      if (!targetItem) continue
+
+      // Get the Motion component and Scale param.
+      const chain = await targetItem.getComponentChain()
+      const compCount = chain.getComponentCount()
+      let scaleParam = null
+      for (let ci = 0; ci < compCount; ci++) {
+        const comp = chain.getComponentAtIndex(ci)
+        const matchName = await comp.getMatchName()
+        if (!matchName.includes('Motion') && !matchName.includes('ADBE Motion')) continue
+        const paramCount = comp.getParamCount()
+        for (let pi = 0; pi < paramCount; pi++) {
+          const param = comp.getParam(pi)
+          if (param.displayName.toLowerCase().includes('scale')) {
+            scaleParam = param
+            break
+          }
+        }
+        if (scaleParam) break
+      }
+      if (!scaleParam) continue
+
+      const clipStartTick = await targetItem.getStartTime()
+      const clipEndTick = await targetItem.getEndTime()
+      const kfStart = scaleParam.createKeyframe(100)
+      kfStart.position = clipStartTick
+      const kfEnd = scaleParam.createKeyframe(103)
+      kfEnd.position = clipEndTick
+
+      this.tx(
+        project,
+        (c) => {
+          c.addAction(scaleParam!.createSetTimeVaryingAction(true))
+          c.addAction(scaleParam!.createAddKeyframeAction(kfStart))
+          c.addAction(scaleParam!.createAddKeyframeAction(kfEnd))
+        },
+        `Punch-in scale cam${src.camera}`,
+      )
+    }
+  }
+
+  /**
+   * Phase 3 — J/L split edits. For shots with jCutSeconds > 0, offset the
+   * corresponding audio clip's in-point earlier so audio leads video (J-cut).
+   * For shots with lCutSeconds > 0, extend the audio clip's out-point past the
+   * video cut so audio trails into the next angle (L-cut).
+   *
+   * Gated at runtime by Phase 0 Probe B (audio track item access). Throws on
+   * failure; caller silently eats the error.
+   */
+  private async applySplitEdits(
+    project: Project,
+    seqId: string,
+    shots: ColdOpenShot[],
+    cuts: CutPoint[],
+    fr: FrameRate,
+    frameRate: number,
+  ): Promise<void> {
+    const splitShots = shots.filter((s) => (s.jCutSeconds ?? 0) > 0 || (s.lCutSeconds ?? 0) > 0)
+    if (!splitShots.length) return
+
+    const seq = await this.findSequenceByGuid(project, seqId)
+    const audioTrackCount = await seq.getAudioTrackCount()
+    if (!audioTrackCount) return
+
+    // We only touch the primary audio track (A1 = index 0) which carries the
+    // mix — J/L on the mix track is enough to create the overlap feel.
+    const a1 = await seq.getAudioTrack(0)
+    const audioItems = await a1.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+
+    for (const shot of splitShots) {
+      const jSec = shot.jCutSeconds ?? 0
+      const lSec = shot.lCutSeconds ?? 0
+      const shotFrameApprox = Math.round(shot.offsetSeconds * frameRate)
+      const matchingCut = cuts.find((c) => Math.abs(c.frame - shotFrameApprox) < frameRate)
+      if (!matchingCut) continue
+
+      // Find the audio item whose start time aligns with this cut.
+      let targetAudio = null
+      for (const ai of audioItems) {
+        const startFrame = this.tickToFrame(await ai.getStartTime(), fr)
+        if (Math.abs(startFrame - matchingCut.frame) < 5) {
+          targetAudio = ai
+          break
+        }
+      }
+      if (!targetAudio) continue
+
+      if (jSec > 0) {
+        const currentIn = await targetAudio.getInPoint()
+        const newInSeconds = Math.max(0, currentIn.seconds - jSec)
+        const newInTick = this.ppro.TickTime.createWithSeconds(newInSeconds)
+        this.tx(
+          project,
+          (c) => c.addAction(targetAudio!.createSetInPointAction(newInTick)),
+          'J-cut audio lead',
+        )
+      }
+
+      if (lSec > 0) {
+        const currentOut = await targetAudio.getOutPoint()
+        const newOutTick = this.ppro.TickTime.createWithSeconds(currentOut.seconds + lSec)
+        this.tx(
+          project,
+          (c) => c.addAction(targetAudio!.createSetOutPointAction(newOutTick)),
+          'L-cut audio trail',
+        )
       }
     }
   }

@@ -11,6 +11,8 @@ import { getAutopilotOptions } from './autopilot'
 import type { AutopilotOption } from './autopilot'
 import { findColdOpens } from './coldOpenFinder'
 import type { ColdOpenOption } from './coldOpenFinder'
+import { runColdOpenSpike } from './spike-coldopen'
+import type { Phase0Results } from './spike-coldopen'
 
 import './App.css'
 
@@ -74,6 +76,8 @@ export default function App() {
   const [coldOpenStatus, setColdOpenStatus] = useState<'idle' | 'finding' | 'done' | 'assembling' | 'error'>('idle')
   const [coldOpenError, setColdOpenError] = useState('')
   const [coldOpenResult, setColdOpenResult] = useState('')
+  const [spikeStatus, setSpikeStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const [spikeResults, setSpikeResults] = useState<Phase0Results | null>(null)
   const selected = decisions.filter((d) => d.selected)
   const counts = useMemo(() => Object.keys(markerMeta).map((type) => ({ type: type as MarkerType, count: decisions.filter((d) => d.type === type).length })).filter((x) => x.count), [decisions])
   const filteredDecisions = useMemo(() => {
@@ -219,6 +223,21 @@ export default function App() {
   }
 
   const saveApiKey = (key: string) => { setApiKey(key); try { localStorage.setItem('roughcut.anthropicKey', key) } catch { /* localStorage unavailable */ } }
+
+  const runSpike = async () => {
+    try {
+      setSpikeStatus('running'); setSpikeResults(null)
+      const results = await runColdOpenSpike()
+      setSpikeResults(results); setSpikeStatus('done')
+    } catch (e) {
+      setSpikeStatus('error')
+      setSpikeResults({
+        probeA: { ok: false, detail: String(e) },
+        probeB: { ok: false, detail: '' },
+        probeC: { ok: false, detail: '' },
+      })
+    }
+  }
 
   const findColdOpenHooks = async () => {
     if (!segments.length) { setColdOpenError('Analyze a transcript first so there is something to scan.'); setColdOpenStatus('error'); return }
@@ -476,6 +495,32 @@ export default function App() {
           {autoCutStatus === 'done' && <div className="success"><Check size={16} />Created "{autoCutResult}". Open it in the Project panel.</div>}
           {autoCutError && <div className="error"><AlertTriangle size={16} />{autoCutError}</div>}
           <p className="safety"><Lock size={14} />Original sequence and audio stay untouched</p>
+
+          {isPremiereHost() && (
+            <div className="spike-panel">
+              <div className="spike-panel-head">
+                <strong>Phase 0 API Spike</strong>
+                <span className="hint">Run once to unlock punch-ins + split edits</span>
+              </div>
+              <Press className="text-button" disabled={spikeStatus === 'running'} onClick={runSpike}>
+                {spikeStatus === 'running' ? 'Running probes…' : 'Run API Spike'}
+              </Press>
+              {spikeResults && (
+                <div className="spike-results">
+                  {(['probeA', 'probeB', 'probeC'] as const).map((k) => {
+                    const labels = { probeA: 'Scale keyframing', probeB: 'Audio access', probeC: 'MOGRT' }
+                    const r = spikeResults[k]
+                    return (
+                      <div key={k} className={`spike-probe ${r.ok ? 'ok' : 'fail'}`}>
+                        <span className="spike-probe-label">{r.ok ? '✓' : '✗'} {labels[k]}</span>
+                        <span className="spike-probe-detail">{r.detail}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </section>
       </section>
     </main>

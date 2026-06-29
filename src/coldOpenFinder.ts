@@ -16,6 +16,12 @@ export interface ColdOpenShot {
   shot: 'guest_tight' | 'host_reaction' | 'wide'
   /** Optional one-line note for the editor (e.g. "emphasis punch-in on 'fire'"). */
   note?: string
+  /** True when this cut should receive a digital punch-in (scale 100→103%). */
+  punch?: boolean
+  /** J-cut: audio from next clip leads video by this many seconds (0 = no J-cut). */
+  jCutSeconds?: number
+  /** L-cut: audio from this clip trails into next clip by this many seconds (0 = no L-cut). */
+  lCutSeconds?: number
 }
 
 export interface ColdOpenOption {
@@ -75,9 +81,17 @@ Follow this template pattern (adjust offsets to match natural speech breaks in t
 
 Adjust break points to land on natural sentence boundaries in the transcript. If the window is under 15 seconds, omit the host_reaction and wide cuts and just use guest_tight.
 
+## Digital Punch-Ins
+Mark 1–2 shots per option with "punch": true where the speaker delivers a high-impact word or emotional peak. The tool will scale that clip from 100% to 103% across its duration (subtle zoom-in). Only mark genuinely emphatic moments — overuse kills the effect.
+
+## J/L Split Edits (use sparingly, max 2 per clip)
+- For the opening cut: set "jCutSeconds": 1.5 on the first shot if the guest's audio energy warrants bringing audio in before the visual — creates anticipation.
+- For the closing cliffhanger shot: set "lCutSeconds": 1.0 on the last shot if the audio trailing into black adds tension.
+- Leave both fields absent (or 0) for all other shots.
+
 ## Output Format (STRICT)
 Respond with ONLY a raw JSON object — no prose, no markdown fences — of exactly this shape:
-{"options":[{"startSeconds":<number>,"endSeconds":<number>,"archetype":"<In Media Res|Open Loop|Paradigm Shift|...>","script":"<exact verbatim text to cut>","justification":"<why this keeps a YouTube viewer from clicking away in the first 5 seconds>","shots":[{"offsetSeconds":<number>,"shot":"<guest_tight|host_reaction|wide>","note":"<optional editor hint>"}]}]}
+{"options":[{"startSeconds":<number>,"endSeconds":<number>,"archetype":"<In Media Res|Open Loop|Paradigm Shift|...>","script":"<exact verbatim text to cut>","justification":"<why this keeps a YouTube viewer from clicking away in the first 5 seconds>","shots":[{"offsetSeconds":<number>,"shot":"<guest_tight|host_reaction|wide>","note":"<optional editor hint>","punch":false,"jCutSeconds":0,"lCutSeconds":0}]}]}
 Provide exactly 3 options, best first. Each option must include a shots array.`
 
 const VALID_SHOT_TYPES = new Set(['guest_tight', 'host_reaction', 'wide'])
@@ -106,6 +120,9 @@ function extractOptions(text: string): ColdOpenOption[] {
           offsetSeconds: Number(sh.offsetSeconds) || 0,
           shot: (VALID_SHOT_TYPES.has(shotType) ? shotType : 'guest_tight') as ColdOpenShot['shot'],
           note: sh.note ? String(sh.note) : undefined,
+          punch: sh.punch === true,
+          jCutSeconds: Number(sh.jCutSeconds) || 0,
+          lCutSeconds: Number(sh.lCutSeconds) || 0,
         }
       })
       .filter((s) => s.offsetSeconds >= 0)
