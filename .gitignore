@@ -13,6 +13,10 @@ dist-ssr
 plugin-dist/
 *.local
 
+# Local test artifacts (large source-footage XML / translation logs kept out of the repo)
+EDIT V2*.xml
+FCP Translation Results*.txt
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -1,3 +1,5 @@
+import { parseTranscriptFile } from './transcriptParse'
+import type { CutPoint, DetectedSources } from './cutEngine'
 import type { EditDecision, PremiereAdapter, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
 
 export const sequence: SequenceInfo = {
@@ -20,15 +22,62 @@ export const transcript: TranscriptSegment[] = [
 
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
+const pickBrowserFile = () => new Promise<File | undefined>((resolve) => {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.prtranscript,.json,.csv,.srt,.txt'
+  input.onchange = () => resolve(input.files?.[0])
+  input.oncancel = () => resolve(undefined)
+  input.click()
+})
+
 export class MockPremiereAdapter implements PremiereAdapter {
   async getActiveSequence() { await wait(100); return sequence }
   async getTranscript(sequenceId: string) { void sequenceId; await wait(180); return transcript }
+  async importTranscriptFile() {
+    const file = await pickBrowserFile()
+    if (!file) return []
+    const segments = parseTranscriptFile(await file.text(), file.name)
+    if (!segments.length) throw new Error('That file did not contain a readable transcript.')
+    return segments.sort((a, b) => a.start - b.start)
+  }
   async addMarkers(sequenceId: string, decisions: EditDecision[]) { void sequenceId; void decisions; await wait(550) }
   async createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[]) {
     void sequenceId; void decisions; void mappings
     await wait(900)
     return 'Episode 042 - Guest Interview - AI Rough Cut'
   }
+  async detectSources(): Promise<DetectedSources> {
+    await wait(200)
+    return {
+      sequenceId: 'seq-042',
+      fingerprint: '{"sequenceId":"seq-042","frameRate":29.97,"totalFrames":17982,"targetTrackIndex":3,"targetTrackItemCount":0,"sources":[]}',
+      sources: [
+        { vIndex: 0, camera: 1, name: 'cam1.mp4', mediaPath: '/mock/cam1.mp4', clipStartFrame: 0, clipInFrame: 0, clipOutFrame: 17982 },
+        { vIndex: 1, camera: 2, name: 'cam2.mp4', mediaPath: '/mock/cam2.mp4', clipStartFrame: 0, clipInFrame: 0, clipOutFrame: 17982 },
+        { vIndex: 2, camera: 3, name: 'cam3.mp4', mediaPath: '/mock/cam3.mp4', clipStartFrame: 0, clipInFrame: 0, clipOutFrame: 17982 },
+      ],
+      targetTrackIndex: 3,
+      totalFrames: 17982,
+      frameRate: 29.97,
+    }
+  }
+  async applyCutMap(sequenceId: string, cuts: CutPoint[], det: DetectedSources, endFrame: number) {
+    void sequenceId; void cuts; void det; void endFrame
+    await wait(500)
+    return 'Episode 042 - Guest Interview - Auto Cut'
+  }
+  async assembleSocialSequence(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[], det: DetectedSources) {
+    void sequenceId; void decisions; void mappings; void det
+    await wait(500)
+    return 'Episode 042 - Guest Interview - Cold Open'
+  }
+  async assembleColdOpenClip(sequenceId: string, startSeconds: number, endSeconds: number, shots?: unknown) {
+    void sequenceId; void startSeconds; void endSeconds; void shots
+    await wait(500)
+    return 'Episode 042 - Guest Interview - Cold Open'
+  }
 }
 
 export const premiere = new MockPremiereAdapter()
+
