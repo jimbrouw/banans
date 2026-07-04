@@ -11,6 +11,9 @@ import { getAutopilotOptions } from './autopilot'
 import type { AutopilotOption } from './autopilot'
 import { findColdOpens } from './coldOpenFinder'
 import type { ColdOpenOption } from './coldOpenFinder'
+import { runColdOpenSpike } from './spike-coldopen'
+import type { Phase0Results } from './spike-coldopen'
+
 import './App.css'
 
 const markerMeta: Record<MarkerType, { name: string; color: string; icon: typeof Sparkles }> = {
@@ -73,6 +76,8 @@ export default function App() {
   const [coldOpenStatus, setColdOpenStatus] = useState<'idle' | 'finding' | 'done' | 'assembling' | 'error'>('idle')
   const [coldOpenError, setColdOpenError] = useState('')
   const [coldOpenResult, setColdOpenResult] = useState('')
+  const [spikeStatus, setSpikeStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const [spikeResults, setSpikeResults] = useState<Phase0Results | null>(null)
   const selected = decisions.filter((d) => d.selected)
   const counts = useMemo(() => Object.keys(markerMeta).map((type) => ({ type: type as MarkerType, count: decisions.filter((d) => d.type === type).length })).filter((x) => x.count), [decisions])
   const filteredDecisions = useMemo(() => {
@@ -219,6 +224,21 @@ export default function App() {
 
   const saveApiKey = (key: string) => { setApiKey(key); try { localStorage.setItem('roughcut.anthropicKey', key) } catch { /* localStorage unavailable */ } }
 
+  const runSpike = async () => {
+    try {
+      setSpikeStatus('running'); setSpikeResults(null)
+      const results = await runColdOpenSpike()
+      setSpikeResults(results); setSpikeStatus('done')
+    } catch (e) {
+      setSpikeStatus('error')
+      setSpikeResults({
+        probeA: { ok: false, detail: String(e) },
+        probeB: { ok: false, detail: '' },
+        probeC: { ok: false, detail: '' },
+      })
+    }
+  }
+
   const findColdOpenHooks = async () => {
     if (!segments.length) { setColdOpenError('Analyze a transcript first so there is something to scan.'); setColdOpenStatus('error'); return }
     try {
@@ -235,7 +255,14 @@ export default function App() {
   const assembleColdOpenFromOption = async (option: ColdOpenOption) => {
     try {
       setColdOpenError(''); setColdOpenResult(''); setColdOpenStatus('assembling')
-      const name = await premiere.assembleColdOpenClip(sequence.id, option.startSeconds, option.endSeconds)
+      // The adapter handles everything: lifts the window with synced audio, then
+      // detects cameras on the subsequence and applies the Energy Reset shot plan.
+      const name = await premiere.assembleColdOpenClip(
+        sequence.id,
+        option.startSeconds,
+        option.endSeconds,
+        option.shots,
+      )
       setColdOpenResult(name)
       setColdOpenStatus('done')
     } catch (reason) {
@@ -342,8 +369,18 @@ export default function App() {
             <a className="api-key-link" role="link" tabIndex={0} onClick={() => openExternal('https://console.anthropic.com/settings/keys')}>Get an API key at console.anthropic.com →</a>
             <input className="api-key" type="password" autoComplete="off" placeholder="Anthropic API key (sk-ant-…)" value={apiKey} onChange={(e) => saveApiKey(e.target.value)} />
             <Press className="rough-cut" style={{ marginTop: 8, backgroundColor: '#b57bed', color: '#fff' }} disabled={coldOpenStatus === 'finding' || coldOpenStatus === 'assembling'} onClick={findColdOpenHooks}>
-              <Sparkles size={19} />{coldOpenStatus === 'finding' ? 'Finding best hooks…' : 'Find 3 Cold Opens (AI)'}
+              <Sparkles size={19} />{coldOpenStatus === 'finding' ? 'Analysing transcript…' : 'Find 3 Cold Opens (AI)'}
             </Press>
+            {coldOpenStatus === 'finding' && (
+              <div className="cold-open-thinking">
+                <div className="cold-open-thinking-bar" />
+                <div className="cold-open-thinking-steps">
+                  <span className="thinking-step active">Reading transcript</span>
+                  <span className="thinking-step">Scoring hooks</span>
+                  <span className="thinking-step">Ranking options</span>
+                </div>
+              </div>
+            )}
             {coldOpens.map((opt, i) => (
               <div className="cold-open-card" key={i}>
                 <div className="cold-open-card-head">
@@ -351,12 +388,23 @@ export default function App() {
                   <strong>{opt.archetype}</strong>
                   <span className="cold-open-time">{formatTime(opt.startSeconds)}–{formatTime(opt.endSeconds)} · {Math.max(0, Math.round(opt.endSeconds - opt.startSeconds))}s</span>
                 </div>
-                <p className="cold-open-script">“{opt.script}”</p>
+                <p className="cold-open-script">"{opt.script}"</p>
                 <p className="cold-open-why"><strong>Why:</strong> {opt.justification}</p>
-                <Press className="text-button" disabled={coldOpenStatus === 'assembling'} onClick={() => assembleColdOpenFromOption(opt)}><Scissors size={14} /> {coldOpenStatus === 'assembling' ? 'Assembling…' : 'Assemble this clip (with audio)'}</Press>
+                {opt.shots.length > 0 && (
+                  <div className="cold-open-shots">
+                    {opt.shots.map((s, si) => (
+                      <span key={si} className="cold-open-shot-pill">
+                        {s.offsetSeconds.toFixed(0)}s · {s.shot.replace('_', ' ')}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <Press className="text-button" disabled={coldOpenStatus === 'assembling'} onClick={() => assembleColdOpenFromOption(opt)}>
+                  <Scissors size={14} /> {coldOpenStatus === 'assembling' ? 'Assembling…' : 'Assemble this clip (with audio)'}
+                </Press>
               </div>
             ))}
-            {coldOpenResult && <div className="success"><Check size={16} /> Created “{coldOpenResult}” — open it in the Project panel.</div>}
+            {coldOpenResult && <div className="success"><Check size={16} /> Created "{coldOpenResult}" — open it in the Project panel.</div>}
             {coldOpenStatus === 'error' && coldOpenError && <div className="error"><AlertTriangle size={15} /> {coldOpenError}</div>}
           </div>
 
@@ -447,6 +495,32 @@ export default function App() {
           {autoCutStatus === 'done' && <div className="success"><Check size={16} />Created "{autoCutResult}". Open it in the Project panel.</div>}
           {autoCutError && <div className="error"><AlertTriangle size={16} />{autoCutError}</div>}
           <p className="safety"><Lock size={14} />Original sequence and audio stay untouched</p>
+
+          {isPremiereHost() && (
+            <div className="spike-panel">
+              <div className="spike-panel-head">
+                <strong>Phase 0 API Spike</strong>
+                <span className="hint">Run once to unlock punch-ins + split edits</span>
+              </div>
+              <Press className="text-button" disabled={spikeStatus === 'running'} onClick={runSpike}>
+                {spikeStatus === 'running' ? 'Running probes…' : 'Run API Spike'}
+              </Press>
+              {spikeResults && (
+                <div className="spike-results">
+                  {(['probeA', 'probeB', 'probeC'] as const).map((k) => {
+                    const labels = { probeA: 'Scale keyframing', probeB: 'Audio access', probeC: 'MOGRT' }
+                    const r = spikeResults[k]
+                    return (
+                      <div key={k} className={`spike-probe ${r.ok ? 'ok' : 'fail'}`}>
+                        <span className="spike-probe-label">{r.ok ? '✓' : '✗'} {labels[k]}</span>
+                        <span className="spike-probe-detail">{r.detail}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </section>
       </section>
     </main>

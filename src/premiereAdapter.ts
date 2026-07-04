@@ -20,7 +20,9 @@ import {
   selectOutputTrack,
   validateDetectedSources,
 } from './cutEngine'
-import type { CameraSource, CutPoint, DetectedSources } from './cutEngine'
+import type { CameraSource, CutInterval, CutPoint, DetectedSources } from './cutEngine'
+import { shotsToEnergyResetCuts } from './coldOpenAssembler'
+import type { ColdOpenShot } from './coldOpenFinder'
 import type { EditDecision, PremiereAdapter, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
 
 export { normalizeTranscriptJson }
@@ -787,11 +789,22 @@ class UxpPremiereAdapter implements PremiereAdapter {
   }
 
   /**
-   * Assemble a clean cold-open clip from [startSeconds, endSeconds] as a new
-   * subsequence. createSubsequence carries every video AND audio track for the
-   * in/out range, so the result is a self-contained ~30s clip with synced sound.
+   * Assemble a cold-open clip from [startSeconds, endSeconds] as a new subsequence.
+   * createSubsequence(true) carries every video AND audio track for the in/out range,
+   * giving a self-contained clip with synced audio.
+   *
+   * When `shots` is supplied, the Energy Reset multi-cam cut list is applied to the
+   * subsequence IN PLACE: cameras are detected on the subsequence itself (so frame
+   * data is correct), the shots become a cut map, and each interval is left showing
+   * only its focus camera (blade + disable). If detection or cutting fails the flat
+   * clip is still returned — the cold open always exists.
    */
-  async assembleColdOpenClip(sequenceId: string, startSeconds: number, endSeconds: number): Promise<string> {
+  async assembleColdOpenClip(
+    sequenceId: string,
+    startSeconds: number,
+    endSeconds: number,
+    shots?: ColdOpenShot[],
+  ): Promise<string> {
     let { project, sequence } = await this.context()
     if (sequence.guid.toString() !== sequenceId) {
       throw new Error('Active sequence changed. Re-open the source sequence before assembling.')
@@ -822,8 +835,336 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const subItem = await sub.getProjectItem()
     this.tx(project, (c) => c.addAction(subItem.createSetNameAction(name)), 'Rename cold open subsequence')
 
-    await project.setActiveSequence(await this.findSequenceByGuid(project, sub.guid.toString()))
-    return name
+    // Activate the subsequence so detection + cutting target it.
+    const subId = sub.guid.toString()
+    await project.setActiveSequence(await this.findSequenceByGuid(project, subId))
+
+    // No shot plan → flat lift, done.
+    if (!shots || shots.length === 0) return name
+
+    // Energy Reset: detect cameras ON THE SUBSEQUENCE (correct 0-based frame data),
+    // turn the shot plan into a cut map, and apply it in place.
+    try {
+      const subDet = await this.detectSources()
+      if (subDet.sources.length < 2) return name   // single-cam window — nothing to switch
+
+      const windowSeconds = endSeconds - startSeconds
+      const cuts = shotsToEnergyResetCuts(shots, windowSeconds, subDet.sources, subDet.frameRate)
+      if (new Set(cuts.map((c) => c.camera)).size < 2) return name   // one angle → nothing to switch
+
+      const fr = this.ppro.FrameRate.createWithValue(subDet.frameRate)
+      const endFrame = subDet.totalFrames
+      const normalized = normalizeCutMap(cuts, endFrame, subDet.sources.length)
+      const intervals = buildCutIntervals(normalized, endFrame, subDet.sources)
+
+      const rp = await this.ppro.Project.getActiveProject()
+      if (!rp) return name
+      await this.bladeAndDisableInPlace(rp, subId, intervals, subDet.sources, fr)
+
+      // Phase 2: Digital punch-ins — scale 100→103% on marked shots.
+      // Silently skip per-shot if keyframing fails (Probe A gates this at runtime).
+      try {
+        await this.applyPunchIns(rp, subId, shots, cuts, subDet.sources, fr, subDet.frameRate)
+      } catch {
+        // Non-fatal: punch-ins are enhancement, not core.
+      }
+
+      // Phase 3: J/L split edits — audio leads/trails at cut points.
+      // Silently skip if audio access fails (Probe B gates this at runtime).
+      try {
+        await this.applySplitEdits(rp, subId, shots, cuts, fr, subDet.frameRate)
+      } catch {
+        // Non-fatal: split edits are enhancement.
+      }
+
+      return name
+    } catch (e) {
+      // Camera switching failed — the flat clip with synced audio still exists.
+      return `${name} — flat (multicam switch skipped: ${e instanceof Error ? e.message : String(e)})`
+    }
+  }
+
+  /**
+   * Apply an Energy-Reset camera switch to a sequence IN PLACE (no clone). The
+   * sequence must have each camera on its own video track with one clip per track —
+   * true for a createSubsequence(true) cold open whose source was a multi-cam stack.
+   * Each interval is left showing only its focus camera (others bladed + disabled).
+   * Source bin in/out points are saved and restored, since blading mutates them.
+   *
+   * Mirrors applyCutMap's proven blade+disable core, minus the clone/fingerprint
+   * machinery (we just created this sequence, so there is nothing to guard against).
+   */
+  private async bladeAndDisableInPlace(
+    project: Project,
+    seqId: string,
+    intervals: CutInterval[],
+    sources: CameraSource[],
+    fr: FrameRate,
+  ): Promise<void> {
+    const toTick = (frame: number) => this.frameToTick(frame, fr)
+    const coversInterval = (src: CameraSource, iv: { startFrame: number; endFrame: number }) => {
+      const kIn = iv.startFrame - src.clipStartFrame + src.clipInFrame
+      const kOut = iv.endFrame - src.clipStartFrame + src.clipInFrame
+      return kIn >= src.clipInFrame && kOut <= src.clipOutFrame
+    }
+    const needsBlade = intervals.length > 1
+    let bladed = false
+
+    // Save source bin in/out points (blading overwrites them).
+    const seq0 = await this.findSequenceByGuid(project, seqId)
+    const savedState = new Map<number, { inTicks: string; outTicks: string }>()
+    for (const src of sources) {
+      const clip = await this.freshSourceClip(seq0, src.vIndex)
+      const inP = await clip.getInPoint(this.ppro.Constants.MediaType.VIDEO)
+      const outP = await clip.getOutPoint(this.ppro.Constants.MediaType.VIDEO)
+      savedState.set(src.camera, { inTicks: inP.ticks, outTicks: outP.ticks })
+    }
+
+    try {
+      const seq = await this.findSequenceByGuid(project, seqId)
+      const editor = await this.ppro.SequenceEditor.getEditor(seq)
+      const camItem = new Map<number, ProjectItem>()
+      const camClip = new Map<number, ClipProjectItem>()
+      for (const src of sources) {
+        const track = await seq.getVideoTrack(src.vIndex)
+        const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+        const pi = await (items[0] as VideoClipTrackItem).getProjectItem()
+        camItem.set(src.camera, pi)
+        camClip.set(src.camera, this.ppro.ClipProjectItem.cast(pi) as ClipProjectItem)
+      }
+
+      // Blade every camera at every interval boundary it covers, so all tracks
+      // share aligned segments for the disable pass.
+      if (needsBlade) {
+        for (const src of sources) {
+          const clip = camClip.get(src.camera)!
+          const projItem = camItem.get(src.camera)!
+          for (const iv of intervals) {
+            if (!coversInterval(src, iv)) continue
+            const kIn = iv.startFrame - src.clipStartFrame + src.clipInFrame
+            const kOut = iv.endFrame - src.clipStartFrame + src.clipInFrame
+            const setOk = this.tx(
+              project,
+              (c) => c.addAction(clip.createSetInOutPointsAction(toTick(kIn), toTick(kOut))),
+              `Set in/out cam${src.camera}`,
+            )
+            if (!setOk) throw new Error(`Premiere rejected in/out for camera ${src.camera}.`)
+            bladed = true
+            const writeOk = this.tx(
+              project,
+              (c) => c.addAction(editor.createOverwriteItemAction(projItem, toTick(iv.startFrame), src.vIndex, -1)),
+              `Blade cam${src.camera} @${iv.startFrame}`,
+            )
+            if (!writeOk) throw new Error(`Premiere rejected blade for camera ${src.camera} at frame ${iv.startFrame}.`)
+          }
+        }
+      }
+
+      // Disable every non-focus segment.
+      for (const src of sources) {
+        const toDisable = intervals.filter((iv) => iv.camera !== src.camera && coversInterval(src, iv))
+        if (toDisable.length === 0) continue
+        const track = await seq.getVideoTrack(src.vIndex)
+        const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+        const byStart = new Map<number, VideoClipTrackItem>()
+        for (const it of items) byStart.set(this.tickToFrame(await it.getStartTime(), fr), it as VideoClipTrackItem)
+        const targets: VideoClipTrackItem[] = []
+        for (const iv of toDisable) {
+          const hit = byStart.get(iv.startFrame) ?? byStart.get(iv.startFrame - 1) ?? byStart.get(iv.startFrame + 1)
+          if (hit) targets.push(hit)
+        }
+        const BATCH = 20
+        for (let i = 0; i < targets.length; i += BATCH) {
+          const chunk = targets.slice(i, i + BATCH)
+          const ok = this.tx(
+            project,
+            (c) => { for (const it of chunk) c.addAction(it.createSetDisabledAction(true)) },
+            `Disable cam${src.camera} ${i}`,
+          )
+          if (!ok) throw new Error(`Premiere rejected disable batch for camera ${src.camera}.`)
+        }
+      }
+    } finally {
+      // Restore source bin in/out points (best effort) if blading changed them.
+      if (bladed) {
+        const rp = await this.ppro.Project.getActiveProject()
+        if (rp) {
+          const rs = await this.findSequenceByGuid(rp, seqId)
+          for (const src of sources) {
+            const saved = savedState.get(src.camera)
+            if (!saved) continue
+            try {
+              const freshClip = await this.freshSourceClip(rs, src.vIndex)
+              this.tx(
+                rp,
+                (c) => c.addAction(freshClip.createSetInOutPointsAction(
+                  this.ppro.TickTime.createWithTicks(saved.inTicks),
+                  this.ppro.TickTime.createWithTicks(saved.outTicks),
+                )),
+                `Restore in/out cam${src.camera}`,
+              )
+            } catch {
+              // Best-effort restore; leave it to the editor if Premiere rejects.
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Phase 2 — Digital punch-ins. For each shot marked `punch: true`, find the
+   * video clip in the subsequence that corresponds to that interval and keyframe
+   * its Motion > Scale from 100% to 103% across the clip duration. This creates
+   * a subtle creep-in zoom that draws the eye without being jarring.
+   *
+   * Gated at runtime by Phase 0 Probe A (scale keyframing). If the Motion
+   * component or Scale param isn't accessible, the method throws and the caller
+   * silently eats the error — the clip is still cut and usable.
+   */
+  private async applyPunchIns(
+    project: Project,
+    seqId: string,
+    shots: ColdOpenShot[],
+    cuts: CutPoint[],
+    sources: CameraSource[],
+    fr: FrameRate,
+    frameRate: number,
+  ): Promise<void> {
+    const punchShots = shots.filter((s) => s.punch)
+    if (!punchShots.length) return
+
+    const seq = await this.findSequenceByGuid(project, seqId)
+    for (const shot of punchShots) {
+      // Find the cut point that corresponds to this shot.
+      const shotFrameApprox = Math.round(shot.offsetSeconds * frameRate)
+      const matchingCut = cuts.find((c) => Math.abs(c.frame - shotFrameApprox) < frameRate)
+      if (!matchingCut) continue
+
+      // Find the source for this camera.
+      const src = sources.find((s) => s.camera === matchingCut.camera)
+      if (!src) continue
+
+      const track = await seq.getVideoTrack(src.vIndex)
+      const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+      // Find the clip that starts at (approximately) this cut's frame.
+      let targetItem: VideoClipTrackItem | null = null
+      for (const it of items) {
+        const startFrame = this.tickToFrame(await it.getStartTime(), fr)
+        if (Math.abs(startFrame - matchingCut.frame) < 3) {
+          targetItem = it as VideoClipTrackItem
+          break
+        }
+      }
+      if (!targetItem) continue
+
+      // Get the Motion component and Scale param.
+      const chain = await targetItem.getComponentChain()
+      const compCount = chain.getComponentCount()
+      let scaleParam = null
+      for (let ci = 0; ci < compCount; ci++) {
+        const comp = chain.getComponentAtIndex(ci)
+        const matchName = await comp.getMatchName()
+        if (!matchName.includes('Motion') && !matchName.includes('ADBE Motion')) continue
+        const paramCount = comp.getParamCount()
+        for (let pi = 0; pi < paramCount; pi++) {
+          const param = comp.getParam(pi)
+          if (param.displayName.toLowerCase().includes('scale')) {
+            scaleParam = param
+            break
+          }
+        }
+        if (scaleParam) break
+      }
+      if (!scaleParam) continue
+
+      const clipStartTick = await targetItem.getStartTime()
+      const clipEndTick = await targetItem.getEndTime()
+      const kfStart = scaleParam.createKeyframe(100)
+      kfStart.position = clipStartTick
+      const kfEnd = scaleParam.createKeyframe(103)
+      kfEnd.position = clipEndTick
+
+      this.tx(
+        project,
+        (c) => {
+          c.addAction(scaleParam!.createSetTimeVaryingAction(true))
+          c.addAction(scaleParam!.createAddKeyframeAction(kfStart))
+          c.addAction(scaleParam!.createAddKeyframeAction(kfEnd))
+        },
+        `Punch-in scale cam${src.camera}`,
+      )
+    }
+  }
+
+  /**
+   * Phase 3 — J/L split edits. For shots with jCutSeconds > 0, offset the
+   * corresponding audio clip's in-point earlier so audio leads video (J-cut).
+   * For shots with lCutSeconds > 0, extend the audio clip's out-point past the
+   * video cut so audio trails into the next angle (L-cut).
+   *
+   * Gated at runtime by Phase 0 Probe B (audio track item access). Throws on
+   * failure; caller silently eats the error.
+   */
+  private async applySplitEdits(
+    project: Project,
+    seqId: string,
+    shots: ColdOpenShot[],
+    cuts: CutPoint[],
+    fr: FrameRate,
+    frameRate: number,
+  ): Promise<void> {
+    const splitShots = shots.filter((s) => (s.jCutSeconds ?? 0) > 0 || (s.lCutSeconds ?? 0) > 0)
+    if (!splitShots.length) return
+
+    const seq = await this.findSequenceByGuid(project, seqId)
+    const audioTrackCount = await seq.getAudioTrackCount()
+    if (!audioTrackCount) return
+
+    // We only touch the primary audio track (A1 = index 0) which carries the
+    // mix — J/L on the mix track is enough to create the overlap feel.
+    const a1 = await seq.getAudioTrack(0)
+    const audioItems = await a1.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+
+    for (const shot of splitShots) {
+      const jSec = shot.jCutSeconds ?? 0
+      const lSec = shot.lCutSeconds ?? 0
+      const shotFrameApprox = Math.round(shot.offsetSeconds * frameRate)
+      const matchingCut = cuts.find((c) => Math.abs(c.frame - shotFrameApprox) < frameRate)
+      if (!matchingCut) continue
+
+      // Find the audio item whose start time aligns with this cut.
+      let targetAudio = null
+      for (const ai of audioItems) {
+        const startFrame = this.tickToFrame(await ai.getStartTime(), fr)
+        if (Math.abs(startFrame - matchingCut.frame) < 5) {
+          targetAudio = ai
+          break
+        }
+      }
+      if (!targetAudio) continue
+
+      if (jSec > 0) {
+        const currentIn = await targetAudio.getInPoint()
+        const newInSeconds = Math.max(0, currentIn.seconds - jSec)
+        const newInTick = this.ppro.TickTime.createWithSeconds(newInSeconds)
+        this.tx(
+          project,
+          (c) => c.addAction(targetAudio!.createSetInPointAction(newInTick)),
+          'J-cut audio lead',
+        )
+      }
+
+      if (lSec > 0) {
+        const currentOut = await targetAudio.getOutPoint()
+        const newOutTick = this.ppro.TickTime.createWithSeconds(currentOut.seconds + lSec)
+        this.tx(
+          project,
+          (c) => c.addAction(targetAudio!.createSetOutPointAction(newOutTick)),
+          'L-cut audio trail',
+        )
+      }
+    }
   }
 }
 

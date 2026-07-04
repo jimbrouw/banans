@@ -1,5 +1,6 @@
 export type { CameraSource, CutInterval, CutPoint, DetectedSources } from './cutEngine'
 import type { CutPoint, DetectedSources } from './cutEngine'
+import type { ColdOpenShot } from './coldOpenFinder'
 
 export type MarkerType = 'social_clip' | 'chapter' | 'suggested_trim' | 'warning' | 'strong_quote' | 'camera_switch' | 'social_hook' | 'audiogram'
 export type Platform = 'shorts' | 'reels' | 'tiktok' | 'stories' | 'audiogram'
@@ -60,5 +61,5 @@ export interface PremiereAdapter {
   detectSources(): Promise<DetectedSources>
   applyCutMap(sequenceId: string, cuts: CutPoint[], det: DetectedSources, endFrame: number): Promise<string>
   assembleSocialSequence(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[], det: DetectedSources): Promise<string>
-  assembleColdOpenClip(sequenceId: string, startSeconds: number, endSeconds: number): Promise<string>
+  assembleColdOpenClip(sequenceId: string, startSeconds: number, endSeconds: number, shots?: ColdOpenShot[]): Promise<string>
 }
