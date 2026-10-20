@@ -11,6 +11,7 @@ import { ResultsPanel } from './panels/ResultsPanel'
 import { ColdOpenPanel } from './panels/ColdOpenPanel'
 import { AutoCutPanel } from './panels/AutoCutPanel'
 import { EngineStatus } from './panels/EngineStatus'
+import { ReviewPanel } from './panels/ReviewPanel'
 
 import './App.css'
 
@@ -79,6 +80,7 @@ export default function App() {
         <SequencePanel sequence={sequence} loading={status === 'loading'} />
         <SpeakerMappingPanel mappings={mappings} onChange={updateMapping} />
         <AnalysisPanel settings={settings} onPatch={patchSettings} busy={busy} buttonLabel={analyseLabel} error={error} onAnalyse={runAnalysis} />
+        <ReviewPanel sequenceId={sequence.id} />
 
         {decisions.length > 0 && <section className="section results">
           <ResultsPanel decisions={decisions} setDecisions={setDecisions} sequenceName={sequence.name} creating={status === 'creating'} created={status === 'created'} onCreateRoughCut={createRoughCut} />

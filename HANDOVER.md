@@ -38,6 +38,10 @@ src/
     AutoCutPanel.tsx           Detect cameras, autopilot options, apply
     SpikePanel.tsx             Phase 0 API probe runner (Premiere only)
     EngineStatus.tsx           Header pill: is the local engine reachable?
+    ReviewPanel.tsx            Clean-up review: transcript, pause/filler cuts, toggle, marked cut
+  reviewModel.ts               Pure: source→sequence time mapping, cut building/merging, summary
+  reviewHost.ts                Premiere reads for review: A1 clips + media paths, set playhead
+  reviewDemo.ts                Canned engine output for the browser demo
   engineClient.ts              Typed fetch client for the local engine (127.0.0.1:7317)
   ui.tsx                       Shared components: Press, Toggle
   uiHelpers.ts                 markerMeta, platform maps, formatTime, openExternal
@@ -95,7 +99,28 @@ Panel (UXP) ── engineClient.ts ──fetch──▶ roughcut-engine (FastAPI
 - The panel passes the clip's media **path** (Probe F checks we can read it); the engine reads the file directly.
 - `engineHealth()` returns `null` when the engine is down, and every feature must keep working on Premiere's own transcript in that case.
 - Manifest allows `http://127.0.0.1:7317` (needs UDT Unload → Load). **Not yet verified in UXP**: whether UXP's network permission accepts plain http to localhost.
-- Nothing in the analysis flow calls the engine yet. That's ROADMAP Phase 2 (review screen).
+- The **Clean-up review** panel (ROADMAP Phase 2) is the first consumer, described below.
+
+### Clean-up review flow
+
+```
+ReviewPanel "Transcribe & find pauses"
+  └─ reviewHost.getPrimaryAudioClips()   A1 clips: media path, sequence start/end, source in-point
+  └─ per unique media file: engine /transcribe + /silences (min 0.3s, filtered locally)
+  └─ reviewModel.wordsForClip / mapToSequence   source time → sequence time, per clip
+  └─ reviewModel.buildCuts(words, silences, settings)
+       ├─ silences ≥ min pause, shrunk by "breathing room" padding
+       ├─ never cuts through a non-filler word (silence minus word spans)
+       ├─ filler words (if enabled) become cuts
+       └─ cuts within 50 ms merge (e.g. "um" + following pause)
+  └─ editor toggles cuts (pause chips / struck filler words); click a timestamp → playhead
+  └─ "Create Marked Review Cut" → cutsToDecisions → premiere.createRoughCut (markers on a clone)
+```
+
+- Toggled-off cuts are remembered by their start/end, so changing settings keeps your choices where the cut still exists.
+- In the browser demo, `getPrimaryAudioClips()` returns `null` and the panel uses `reviewDemo.ts`.
+- **Assumes the dialogue is on A1.** Multicam podcasts with one mic per track will need a track picker.
+- **Not yet verified in Premiere:** A1 track-item `getInPoint()` returning source time, and `setPlayerPosition`.
 
 ---
 

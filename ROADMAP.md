@@ -85,7 +85,7 @@ Each phase is one PR to `jimbrouw/banans` and ships on its own.
 |---|---|---|---|
 | 0 | **Finish what's open** | Run the Phase 0 API spike in UDT (scale keyframes, audio items, MOGRT). Probe `Project.importFiles` on an .xml and ripple-delete availability. Split `App.tsx` (528 lines, all state) into screens. | Low. Gates 3, 5, 6. |
 | 1 | **Local engine v1** ✅ (mlx-whisper instead of whisper.cpp) | `roughcut-engine` service + `/transcribe` (whisper.cpp, word timestamps, verbatim fillers) + `/silences` (ffmpeg). Panel health check and engine status UI. | Medium (packaging) |
-| 2 | **Review screen** | The new Review UX from §4, wired to existing `analyse.ts` decisions plus the new word-level data. | Low |
+| 2 | **Review screen** ✅ (pauses + fillers; writes markers until Phase 3) | The new Review UX from §4, wired to existing `analyse.ts` decisions plus the new word-level data. | Low |
 | 3 | **Real cutting** | Apply kept segments to a new sequence: either (a) blade + ripple-delete in UXP if the spike says yes, or (b) generate FCP XML and import it (reuses `fast-xml-parser` + `eval/fcpXmlReference.ts`). Silence + filler cuts with padding/handles. | **Highest**: depends on UXP API |
 | 4 | **AI pass** | `/llm`: bad takes, repetitions, "keep last take", off-topic, plus Chat Edit. Ollama by default, Claude key optional. Same JSON contract as `coldOpenFinder.ts`. Score it with the eval harness. | Medium (local model quality) |
 | 5 | **Podcast Mode upgrade** | `/diarize` + audio-energy active-speaker detection, so Auto-Cut uses real speakers instead of rotation. Auto speaker→camera mapping from clip names. | Medium |
