@@ -29,7 +29,16 @@ It runs inside the **Adobe UXP runtime** — a sandboxed, browser-like environme
 
 ```
 src/
-  App.tsx                      Single-component UI (all state lives here)
+  App.tsx                      Shell: shared state (sequence, settings, transcript, decisions)
+  panels/                      One component per panel section; feature-local state lives here
+    SequencePanel.tsx          Active sequence + speaker mapping
+    AnalysisPanel.tsx          Analysis toggles/settings + Analyse button
+    ResultsPanel.tsx           Marker list, filters, export, Create Marked Review Cut
+    ColdOpenPanel.tsx          Cold Open Finder (API key, options, assemble)
+    AutoCutPanel.tsx           Detect cameras, autopilot options, apply
+    SpikePanel.tsx             Phase 0 API probe runner (Premiere only)
+  ui.tsx                       Shared components: Press, Toggle
+  uiHelpers.ts                 markerMeta, platform maps, formatTime, openExternal
   App.css / index.css          Styles
   types.ts                     Shared interfaces
   premiereAdapter.ts           UxpPremiereAdapter — all Premiere API calls
@@ -46,6 +55,7 @@ src/
 public/
   manifest.json                UXP manifest — permissions live here
 COLD_OPEN_DYNAMIC_PLAN.md      Phased plan for Energy Reset implementation
+ROADMAP.md                     AutoEdit gap analysis + phased plan (local engine, cutting, AI pass)
 ```
 
 ---
@@ -388,6 +398,9 @@ banans#3 (PR)  Energy Reset cold open: Claude shot list + multi-cam internal cut
    - ✓ Scale keyframing (Probe A) — gates punch-ins
    - ✓ Audio track access (Probe B) — gates J/L edits
    - ✓ MOGRT (Probe C) — gates Phase 4 typography
+   - ✓ Ripple delete (Probe D) — gates real silence/filler cutting (ROADMAP Phase 3a). Needs **2+ clips on V1**.
+   - ✓ FCP XML import (Probe E) — fallback cutting path (ROADMAP Phase 3b). Leaves a "RoughCut XML Probe" sequence to delete.
+   - ✓ Media file path (Probe F) — the local engine needs source file paths (ROADMAP Phase 1)
 
 If any probe fails, the corresponding feature silently degrades (but the flat clip + cuts still land). Report the green/red results so Phases 2–3 can be marked safe or scheduled for rework.
 
