@@ -11,7 +11,7 @@
   "requiredPermissions": {
     "localFileSystem": "request",
     "network": {
-      "domains": ["https://api.anthropic.com"]
+      "domains": ["https://api.anthropic.com", "http://127.0.0.1:7317"]
     },
     "launchProcess": {
       "schemes": ["https"]

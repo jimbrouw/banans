@@ -73,6 +73,10 @@ header {
 header h1 { margin: 0; font-size: 19px; letter-spacing: -.02em; }
 header p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
 .host-label { margin-left: auto; font-size: 10px; letter-spacing: .12em; color: #858e90; }
+.engine-pill { margin-left: 10px; font-size: 10px; letter-spacing: .08em; display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.engine-pill::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background-color: currentColor; }
+.engine-pill.online { color: var(--green); }
+.engine-pill.offline { color: #858e90; }
 
 .section { padding: 21px 24px; border-bottom: 1px solid var(--line); background-color: var(--base); }
 .section:last-child { border: 0; }

@@ -37,6 +37,8 @@ src/
     ColdOpenPanel.tsx          Cold Open Finder (API key, options, assemble)
     AutoCutPanel.tsx           Detect cameras, autopilot options, apply
     SpikePanel.tsx             Phase 0 API probe runner (Premiere only)
+    EngineStatus.tsx           Header pill: is the local engine reachable?
+  engineClient.ts              Typed fetch client for the local engine (127.0.0.1:7317)
   ui.tsx                       Shared components: Press, Toggle
   uiHelpers.ts                 markerMeta, platform maps, formatTime, openExternal
   App.css / index.css          Styles
@@ -54,6 +56,7 @@ src/
   eval/                        Evaluation harness
 public/
   manifest.json                UXP manifest — permissions live here
+engine/                        Local Python companion service (see engine/README.md)
 COLD_OPEN_DYNAMIC_PLAN.md      Phased plan for Energy Reset implementation
 ROADMAP.md                     AutoEdit gap analysis + phased plan (local engine, cutting, AI pass)
 ```
@@ -75,6 +78,24 @@ In Premiere, open the **UXP Developer Tool (UDT)**, add the plugin from this fol
 npm test           # Vitest unit tests
 npm run build      # Production bundle → dist/
 ```
+
+---
+
+## Local engine (`engine/`)
+
+UXP panels can't spawn processes, so anything that needs ffmpeg or an ML model runs in a separate local Python service the panel calls over `http://127.0.0.1:7317`.
+
+```
+Panel (UXP) ── engineClient.ts ──fetch──▶ roughcut-engine (FastAPI, uv)
+                                            ├─ POST /silences   ffmpeg silencedetect
+                                            └─ POST /transcribe mlx-whisper, word timestamps, fillers kept
+```
+
+- Start it: `cd engine && uv run roughcut-engine`. The header shows **Engine** (green) or **Engine off**.
+- The panel passes the clip's media **path** (Probe F checks we can read it); the engine reads the file directly.
+- `engineHealth()` returns `null` when the engine is down, and every feature must keep working on Premiere's own transcript in that case.
+- Manifest allows `http://127.0.0.1:7317` (needs UDT Unload → Load). **Not yet verified in UXP**: whether UXP's network permission accepts plain http to localhost.
+- Nothing in the analysis flow calls the engine yet. That's ROADMAP Phase 2 (review screen).
 
 ---
 

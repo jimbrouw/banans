@@ -10,6 +10,7 @@ import { AnalysisPanel } from './panels/AnalysisPanel'
 import { ResultsPanel } from './panels/ResultsPanel'
 import { ColdOpenPanel } from './panels/ColdOpenPanel'
 import { AutoCutPanel } from './panels/AutoCutPanel'
+import { EngineStatus } from './panels/EngineStatus'
 
 import './App.css'
 
@@ -73,7 +74,7 @@ export default function App() {
   return (
     <main className="app-shell">
       <section className="panel" aria-label="RoughCut podcast edit assistant">
-        <header><div className="brand-mark"><Clapperboard size={19} /></div><div><h1>RoughCut</h1><p>Podcast Edit Assistant</p></div><span className="host-label">{isPremiereHost() ? 'PREMIERE PRO' : 'BROWSER DEMO'}</span></header>
+        <header><div className="brand-mark"><Clapperboard size={19} /></div><div><h1>RoughCut</h1><p>Podcast Edit Assistant</p></div><span className="host-label">{isPremiereHost() ? 'PREMIERE PRO' : 'BROWSER DEMO'}</span><EngineStatus /></header>
 
         <SequencePanel sequence={sequence} loading={status === 'loading'} />
         <SpeakerMappingPanel mappings={mappings} onChange={updateMapping} />
