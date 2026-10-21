@@ -59,6 +59,12 @@ export interface CutInterval {
   sourceOutFrame: number
 }
 
+export interface TimelineSegment<T = unknown> {
+  startFrame: number
+  endFrame: number
+  item: T
+}
+
 // ── Track classification ──────────────────────────────────────────────────────
 
 export type TrackClassification = 'camera' | 'skip' | 'end'
@@ -323,4 +329,52 @@ export function buildCutIntervals(
   validateCoverage(intervals, sources)
 
   return intervals
+}
+
+// ── Timeline segment matching ─────────────────────────────────────────────────
+
+/**
+ * Select the actual bladed timeline items that should be disabled for the given
+ * cut intervals. The segment must cover almost the same time span as the
+ * interval, which tolerates frame-rounding drift without disabling a whole
+ * unbladed source clip.
+ */
+export function selectTimelineSegmentsForIntervals<T>(
+  segments: TimelineSegment<T>[],
+  intervals: Pick<CutInterval, 'startFrame' | 'endFrame'>[],
+  toleranceFrames = 2,
+): T[] {
+  const selected: T[] = []
+
+  for (const interval of intervals) {
+    const intervalLength = interval.endFrame - interval.startFrame
+    const candidates = segments
+      .map((segment) => {
+        const segmentLength = segment.endFrame - segment.startFrame
+        const overlap = Math.max(
+          0,
+          Math.min(segment.endFrame, interval.endFrame) - Math.max(segment.startFrame, interval.startFrame),
+        )
+        const coversInterval = overlap >= Math.max(1, intervalLength - toleranceFrames)
+        const lengthMatches = Math.abs(segmentLength - intervalLength) <= toleranceFrames
+        const boundaryDrift =
+          Math.abs(segment.startFrame - interval.startFrame) +
+          Math.abs(segment.endFrame - interval.endFrame)
+
+        return { segment, coversInterval, lengthMatches, boundaryDrift }
+      })
+      .filter((candidate) => candidate.coversInterval && candidate.lengthMatches)
+      .sort((a, b) => a.boundaryDrift - b.boundaryDrift)
+
+    const match = candidates[0]?.segment
+    if (!match) {
+      throw new Error(
+        `Could not find a bladed timeline segment for frames ${interval.startFrame}-${interval.endFrame}.`,
+      )
+    }
+
+    selected.push(match.item)
+  }
+
+  return selected
 }

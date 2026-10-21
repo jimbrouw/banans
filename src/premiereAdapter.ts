@@ -17,10 +17,11 @@ import {
   buildDetectionFingerprint,
   classifyTrackForDetection,
   normalizeCutMap,
+  selectTimelineSegmentsForIntervals,
   selectOutputTrack,
   validateDetectedSources,
 } from './cutEngine'
-import type { CameraSource, CutInterval, CutPoint, DetectedSources } from './cutEngine'
+import type { CameraSource, CutInterval, CutPoint, DetectedSources, TimelineSegment } from './cutEngine'
 import { shotsToEnergyResetCuts } from './coldOpenAssembler'
 import type { ColdOpenShot } from './coldOpenFinder'
 import type { EditDecision, PremiereAdapter, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
@@ -254,14 +255,13 @@ class UxpPremiereAdapter implements PremiereAdapter {
       // Classify this track.
       let isSeq = false
       let isAdj = false
-      let itemName = ''
       if (items.length === 1) {
         const ti = items[0] as VideoClipTrackItem
         isAdj = await ti.isAdjustmentLayer()
         if (!isAdj) {
           try {
             const projItem = await ti.getProjectItem()
-            itemName = projItem.name
+            const itemName = projItem.name
             const clip = this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
             isSeq = await clip.isSequence()
             // Multicam source clips register as sequences and have [MCn] in their name.
@@ -462,6 +462,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
       }
       const needsBlade = intervals.length > 1
       let bladed = false
+      const restoreFailures: string[] = []
       try {
         // Cache live handles once. lockedAccess keeps them valid across transactions
         // (the reuse pattern the working Vibe-splice spike relies on), so a dense cut
@@ -517,12 +518,23 @@ class UxpPremiereAdapter implements PremiereAdapter {
           phase = `disable cam${src.camera}`
           const track = await cloneSeq.getVideoTrack(src.vIndex)
           const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
-          const byStart = new Map<number, VideoClipTrackItem>()
-          for (const it of items) byStart.set(this.tickToFrame(await it.getStartTime(), fr), it as VideoClipTrackItem)
-          const targets: VideoClipTrackItem[] = []
-          for (const iv of toDisable) {
-            const hit = byStart.get(iv.startFrame) ?? byStart.get(iv.startFrame - 1) ?? byStart.get(iv.startFrame + 1)
-            if (hit) targets.push(hit)
+          const segments: TimelineSegment<VideoClipTrackItem>[] = []
+          for (const item of items) {
+            const it = item as VideoClipTrackItem
+            segments.push({
+              startFrame: this.tickToFrame(await it.getStartTime(), fr),
+              endFrame: this.tickToFrame(await it.getEndTime(), fr),
+              item: it,
+            })
+          }
+          let targets: VideoClipTrackItem[]
+          try {
+            targets = selectTimelineSegmentsForIntervals(segments, toDisable)
+          } catch (e) {
+            throw new Error(
+              `Camera ${src.camera} on V${src.vIndex + 1}: ${e instanceof Error ? e.message : String(e)}`,
+              { cause: e },
+            )
           }
           const BATCH = 20
           for (let i = 0; i < targets.length; i += BATCH) {
@@ -540,7 +552,6 @@ class UxpPremiereAdapter implements PremiereAdapter {
         // 8. Restore source in/out points — only if blading mutated them.
         if (bladed) {
           phase = 'restore source in/out'
-          const restoreFailures: string[] = []
           const rp = await this.ppro.Project.getActiveProject()
           if (rp) {
             const rs = await this.findSequenceByGuid(rp, sequenceId)
@@ -563,14 +574,14 @@ class UxpPremiereAdapter implements PremiereAdapter {
               }
             }
           }
-          if (restoreFailures.length > 0) {
-            throw new Error(
-              `Auto-cut FAILED: could not restore original source in/out points.\n` +
-              `Affected cameras:\n${restoreFailures.map(f => `  • ${f}`).join('\n')}\n` +
-              `Check these clips in the Source Monitor and reset their in/out points manually.`,
-            )
-          }
         }
+      }
+      if (restoreFailures.length > 0) {
+        throw new Error(
+          `Auto-cut FAILED: could not restore original source in/out points.\n` +
+          `Affected cameras:\n${restoreFailures.map(f => `  • ${f}`).join('\n')}\n` +
+          `Check these clips in the Source Monitor and reset their in/out points manually.`,
+        )
       }
 
       // 9. Activate the clone.
@@ -581,7 +592,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       if (/script object is no longer valid/i.test(msg)) {
-        throw new Error(`[${phase}] ${msg}`)
+        throw new Error(`[${phase}] ${msg}`, { cause: e })
       }
       throw e
     }
@@ -690,6 +701,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const cloneTrackCount = await clone.getVideoTrackCount()
     const useInsertForFirstClip = det.targetTrackIndex >= cloneTrackCount
 
+    const restoreFailures: string[] = []
     try {
       let currentStartFrame = 0
       let isFirstClip = true
@@ -753,7 +765,6 @@ class UxpPremiereAdapter implements PremiereAdapter {
       }
     } finally {
       // 7. Restore source in/out points with re-fetched context and fresh handles.
-      const restoreFailures: string[] = []
       const { project: rp, sequence: rs } = await this.context()
       for (const src of det.sources) {
         const saved = savedState.get(src.camera)
@@ -773,13 +784,13 @@ class UxpPremiereAdapter implements PremiereAdapter {
           restoreFailures.push(`Camera ${src.camera}: ${e instanceof Error ? e.message : String(e)}`)
         }
       }
-      if (restoreFailures.length > 0) {
-        throw new Error(
-          `Auto-cut FAILED: could not restore original source in/out points.\n` +
-          `Affected cameras:\n${restoreFailures.map(f => `  • ${f}`).join('\n')}\n` +
-          `Check these clips in the Source Monitor and reset their in/out points manually.`,
-        )
-      }
+    }
+    if (restoreFailures.length > 0) {
+      throw new Error(
+        `Auto-cut FAILED: could not restore original source in/out points.\n` +
+        `Affected cameras:\n${restoreFailures.map(f => `  • ${f}`).join('\n')}\n` +
+        `Check these clips in the Source Monitor and reset their in/out points manually.`,
+      )
     }
 
     // 8. Activate the clone
@@ -966,12 +977,23 @@ class UxpPremiereAdapter implements PremiereAdapter {
         if (toDisable.length === 0) continue
         const track = await seq.getVideoTrack(src.vIndex)
         const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
-        const byStart = new Map<number, VideoClipTrackItem>()
-        for (const it of items) byStart.set(this.tickToFrame(await it.getStartTime(), fr), it as VideoClipTrackItem)
-        const targets: VideoClipTrackItem[] = []
-        for (const iv of toDisable) {
-          const hit = byStart.get(iv.startFrame) ?? byStart.get(iv.startFrame - 1) ?? byStart.get(iv.startFrame + 1)
-          if (hit) targets.push(hit)
+        const segments: TimelineSegment<VideoClipTrackItem>[] = []
+        for (const item of items) {
+          const it = item as VideoClipTrackItem
+          segments.push({
+            startFrame: this.tickToFrame(await it.getStartTime(), fr),
+            endFrame: this.tickToFrame(await it.getEndTime(), fr),
+            item: it,
+          })
+        }
+        let targets: VideoClipTrackItem[]
+        try {
+          targets = selectTimelineSegmentsForIntervals(segments, toDisable)
+        } catch (e) {
+          throw new Error(
+            `Camera ${src.camera} on V${src.vIndex + 1}: ${e instanceof Error ? e.message : String(e)}`,
+            { cause: e },
+          )
         }
         const BATCH = 20
         for (let i = 0; i < targets.length; i += BATCH) {

@@ -6,6 +6,7 @@ import {
   computeSourceFrame,
   normalizeCutMap,
   selectOutputTrack,
+  selectTimelineSegmentsForIntervals,
   validateCoverage,
   validateDetectedSources,
 } from './cutEngine'
@@ -339,5 +340,34 @@ describe('buildCutIntervals', () => {
   it('throws when a cut references an unknown camera', () => {
     const cuts: CutPoint[] = [{ frame: 0, camera: 99 }]
     expect(() => buildCutIntervals(cuts, 100, threeCams)).toThrow('camera 99')
+  })
+})
+
+// ── selectTimelineSegmentsForIntervals ────────────────────────────────────────
+
+describe('selectTimelineSegmentsForIntervals', () => {
+  it('selects bladed segments whose boundaries drift by a frame', () => {
+    const segments = [
+      { startFrame: 0, endFrame: 89, item: 'a' },
+      { startFrame: 89, endFrame: 210, item: 'b' },
+      { startFrame: 211, endFrame: 300, item: 'c' },
+    ]
+    const intervals: CutInterval[] = [
+      { startFrame: 90, endFrame: 210, camera: 1, sourceInFrame: 90, sourceOutFrame: 210 },
+      { startFrame: 210, endFrame: 300, camera: 2, sourceInFrame: 210, sourceOutFrame: 300 },
+    ]
+
+    expect(selectTimelineSegmentsForIntervals(segments, intervals)).toEqual(['b', 'c'])
+  })
+
+  it('does not treat an unbladed full-length clip as a valid interval segment', () => {
+    const segments = [
+      { startFrame: 0, endFrame: 300, item: 'wide-full' },
+    ]
+    const intervals: CutInterval[] = [
+      { startFrame: 90, endFrame: 210, camera: 1, sourceInFrame: 90, sourceOutFrame: 210 },
+    ]
+
+    expect(() => selectTimelineSegmentsForIntervals(segments, intervals)).toThrow('90-210')
   })
 })
