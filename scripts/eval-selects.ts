@@ -31,13 +31,24 @@ const references = readdirSync(refsDir).filter((f) => f.endsWith('.xml')).map((f
   readReferenceClip(readFileSync(join(refsDir, f), 'utf8'), (n) => n === episodeName || n.startsWith(`${episodeName}.prproj_mixdown`)))
 
 console.log(`${units.length} sentence lines, ${references.length} published clips to compare against. Asking ${provider}…`)
-const res = await fetch('http://localhost:7317/selects', {
+// Runs as an engine job: a local model takes longer than fetch will wait for one response.
+const started = await fetch('http://localhost:7317/jobs/selects', {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ units, provider, api_key: process.env.ANTHROPIC_API_KEY, audio_path: audio }),
 })
-const out = await res.json() as { detail?: string; model: string; clips: { title: string; type: string; duration: number; opening_line: string; pieces: { start: number; end: number }[] }[]; proposed: number; valid: number }
-if (!res.ok) { console.error(`Engine: ${out.detail}`); process.exit(1) }
+const startBody = await started.json() as { job?: string; detail?: string }
+if (!started.ok || !startBody.job) { console.error(`Engine: ${startBody.detail}`); process.exit(1) }
+type Out = { model: string; clips: { title: string; type: string; duration: number; opening_line: string; pieces: { start: number; end: number }[] }[]; proposed: number; valid: number; proposals: { title: string; span: [number, number] | null; status: string }[] }
+let out: Out | null = null
+let lastStep = ''
+while (!out) {
+  await new Promise((r) => setTimeout(r, 3000))
+  const s = await (await fetch(`http://localhost:7317/jobs/${startBody.job}`)).json() as { status: string; step: string; result: Out | null; error: string | null; seconds: number }
+  if (s.status === 'error') { console.error(`Engine: ${s.error}`); process.exit(1) }
+  if (s.status === 'done') out = s.result
+  else if (s.step !== lastStep) { lastStep = s.step; console.log(`  [${s.seconds}s] ${s.step}`) }
+}
 
 const score = scoreSelects(out.clips.map((c) => ({ title: c.title, pieces: c.pieces })), references)
 console.log(`\n${out.model}: ${out.proposed} proposed, ${out.valid} passed the checks, top ${out.clips.length}:`)
@@ -47,5 +58,11 @@ for (const m of score.matches) {
   console.log(m.found
     ? `  ✓ ${m.reference}: pick #${m.rank}, covers ${Math.round(m.coverage * 100)}%, starts ${m.startError}s / ends ${m.endError}s from yours, ${m.sameOpening ? 'same opening line' : 'different opening line'}`
     : `  ✗ ${m.reference}: not in the top ${out.clips.length} (best overlap ${Math.round(m.coverage * 100)}%)`)
+}
+// Where did each of the editor's clips go? Never proposed, or proposed and dropped (and why)?
+for (const ref of references) {
+  const touching = out.proposals.filter((p) => p.span && ref.pieces.some((r) => p.span![0] < r.end && r.start < p.span![1]))
+  console.log(`\n  Proposals touching ${ref.name} (${ref.pieces.map((p) => `${mmss(p.start)}–${mmss(p.end)}`).join(', ')}): ${touching.length || 'none, the model never proposed this moment'}`)
+  for (const p of touching) console.log(`    ${mmss(p.span![0])}–${mmss(p.span![1])} "${p.title}": ${p.status}`)
 }
 writeFileSync(join(episodeDir, 'selects-eval.json'), JSON.stringify({ at: new Date().toISOString(), model: out.model, picks: out.clips, references, score }, null, 2))

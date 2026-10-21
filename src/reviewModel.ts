@@ -116,26 +116,35 @@ export function buildCuts(words: ReviewWord[], silences: SilenceRange[], setting
 }
 
 /**
- * Split words into sentence-sized units for the AI pass: a new unit at each
- * whisper segment, after sentence-ending punctuation, or after a long gap.
- * Small units let the AI cut a false start without taking the whole segment.
+ * Split words into sentences for the AI passes: a new unit after sentence-ending
+ * punctuation or a real pause. Transcriber segment breaks are ignored because they
+ * fall mid-sentence (Whisper split "What's important | is getting on the bike").
+ * Unpunctuated runs (Whisper sometimes drops punctuation for minutes) are broken
+ * at their longest pause so no unit runs past maxSeconds.
  */
-export function speechUnits(words: ReviewWord[], gap = 0.8): SpeechUnit[] {
+export function speechUnits(words: ReviewWord[], gap = 1.2, maxSeconds = 20): SpeechUnit[] {
   const units: SpeechUnit[] = []
   let current: ReviewWord[] = []
-  const flush = () => {
-    if (!current.length) return
-    units.push({ id: units.length, start: current[0].start, end: current[current.length - 1].end, text: current.map((w) => w.text).join(' ') })
-    current = []
+  const emit = (ws: ReviewWord[]) => {
+    if (ws.length) units.push({ id: units.length, start: ws[0].start, end: ws[ws.length - 1].end, text: ws.map((w) => w.text).join(' ') })
   }
   const sorted = [...words].sort((a, b) => a.start - b.start)
-  sorted.forEach((w, i) => {
-    const prev = sorted[i - 1]
-    if (prev && (prev.segment !== w.segment || w.start - prev.end > gap)) flush()
+  for (const w of sorted) {
+    const prev = current[current.length - 1]
+    if (prev && w.start - prev.end > gap) { emit(current); current = [] }
+    if (current.length > 1 && w.end - current[0].start > maxSeconds) {
+      // Too long without a full stop: break at the biggest pause in its later two thirds
+      // (with no pause at all, a third of the way in), so the rest is well under the limit
+      // and continuous speech is never peeled off one word at a time.
+      const gapAt = (k: number) => current[k].start - current[k - 1].end
+      let at = Math.max(1, Math.floor(current.length / 3))
+      for (let k = at + 1; k < current.length; k++) if (gapAt(k) > gapAt(at)) at = k
+      emit(current.slice(0, at)); current = current.slice(at)
+    }
     current.push(w)
-    if (/[.?!]["')\]]*$/.test(w.text)) flush()
-  })
-  flush()
+    if (/[.?!]["')\]]*$/.test(w.text)) { emit(current); current = [] }
+  }
+  emit(current)
   return units
 }
 

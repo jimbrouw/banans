@@ -39,6 +39,7 @@ The first `uv run` installs dependencies. The first transcription downloads the 
 | `POST /transcribe` | `{path, model?, language?}` | `{model, language, segments:[{start,end,text}], words:[{text,start,end,prob,filler,segment}]}` |
 | `POST /levels` | `{path, channel?, rate=10}` | `{rate, channel, duration, db:[...]}`: loudness per 1/rate s, for Podcast Mode's mic fallback |
 | `POST /selects` | `{units, speakers?, provider, api_key?, audio_path?, count=5}` | `{model, clips:[{rank,title,title_check,type,idea,opening_line,why,pieces,duration,hook_pulled_forward,hook_score,energy}], proposed, valid, shortlisted}` |
+| `POST /jobs/selects` | same as `/selects` | `{job}`; poll `GET /jobs/{id}` → `{status, step, result, error, seconds}` (use this from clients: a local model takes minutes) |
 | `POST /chapters` | `{units, provider, api_key?}` | `{model, valid, chapters:[{start,label,title,seconds}], text}` |
 | `POST /edit` | `{units:[{id,start,end,text}], provider:"ollama"\|"claude", api_key?, instruction?, prefer_last_take}` | `{provider, model, removals:[{start,end,ids,reason,note}], keep_ids}` |
 

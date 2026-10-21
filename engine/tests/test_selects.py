@@ -18,10 +18,17 @@ def cand(first, last, hook=-1, type_="story", idea=None, title="Working title 12
 
 def test_build_checks_length_and_ids():
     assert build(cand(0, 9), BY_ID).duration == pytest.approx(32.7, abs=0.1)  # contiguous lines merge, 0.3 s breaths kept
-    assert build(cand(0, 2), BY_ID) is None    # under 20 s
+    short = build(cand(0, 2), BY_ID)            # under 20 s: carried on through the next lines to finish the thought
+    assert short.last == 6 and 20 <= short.duration <= 23
     assert build(cand(0, 30), BY_ID) is None   # over 60 s
     assert build(cand(9, 3), BY_ID) is None    # backwards
     assert build(cand(0, 999), BY_ID) is None  # unknown id
+
+
+def test_build_does_not_extend_across_a_long_pause():
+    units = {u.id: u for u in UNITS}
+    units[3] = Unit(3, 20.0, 23.0, "After a long pause.")  # 13 s gap after line 2
+    assert build(cand(0, 2), units) is None
 
 
 def test_build_pulls_a_hook_forward():
@@ -57,7 +64,7 @@ def test_selects_ranks_dedupes_and_mixes_types(monkeypatch):
         cand(10, 18, hook=20, type_="opinion"),
         cand(40, 48, type_="tip"),                                     # contains the WIN line
         cand(30, 38, type_="moment", idea="quitting early!"),          # same idea as the first: dropped
-        cand(50, 51, type_="tip"),                                     # too short: dropped
+        cand(58, 59, type_="tip"),                                     # too short, nothing after it to extend into: dropped
         cand(5, 999),                                                  # invalid: dropped
     ])
     out = run_selects(units, ask, audio_db=[-20.0] * 2000)
@@ -112,3 +119,38 @@ def test_routes_need_a_key_for_claude():
     for route in ("/selects", "/chapters"):
         r = client.post(route, json={"units": units, "provider": "claude"})
         assert r.status_code == 400 and "API key" in r.json()["detail"]
+
+
+def test_selects_job_runs_in_background_and_reports_progress(monkeypatch):
+    import time
+    from roughcut_engine import app as app_module
+
+    def fake_asker(provider, model, api_key):
+        return "fake", fake_ask([cand(0, 9), cand(20, 28, type_="tip")])[0]
+    monkeypatch.setattr(app_module, "asker", fake_asker)
+    client = TestClient(app)
+    units = [{"id": u.id, "start": u.start, "end": u.end, "text": u.text} for u in UNITS]
+    job = client.post("/jobs/selects", json={"units": units}).json()["job"]
+    for _ in range(50):
+        status = client.get(f"/jobs/{job}").json()
+        if status["status"] != "running":
+            break
+        time.sleep(0.05)
+    assert status["status"] == "done" and status["result"]["model"] == "fake"
+    assert len(status["result"]["clips"]) == 2
+    assert client.get("/jobs/nope").status_code == 404
+
+
+def test_job_reports_errors():
+    import time
+    from roughcut_engine import jobs
+
+    def boom(progress):
+        progress("halfway")
+        raise EditError("Ollama isn't running.")
+    job = jobs.start(boom)
+    for _ in range(50):
+        if jobs.get(job)["status"] != "running":
+            break
+        time.sleep(0.02)
+    assert jobs.get(job)["status"] == "error" and "Ollama" in jobs.get(job)["error"]

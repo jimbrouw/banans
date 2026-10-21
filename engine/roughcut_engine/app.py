@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .edit import EditError, Unit, ai_edit, asker
 from .selects import run_chapters, run_selects
+from . import jobs
 from .levels import levels
 from .media import MediaError
 from .silences import detect_silences
@@ -129,3 +130,29 @@ def chapters_route(req: ChaptersRequest) -> dict:
         return {"model": model, **run_chapters([Unit(u.id, u.start, u.end, u.text) for u in req.units], ask)}
     except EditError as e:
         raise HTTPException(400, str(e)) from e
+
+
+@app.post("/jobs/selects")
+def start_selects(req: SelectsRequest) -> dict:
+    """Start the selects pass in the background (it takes minutes on a local model); poll GET /jobs/{id}."""
+    try:
+        model, ask = asker(req.provider, req.model, req.api_key)
+    except EditError as e:
+        raise HTTPException(400, str(e)) from e
+    units = [Unit(u.id, u.start, u.end, u.text) for u in req.units]
+
+    def work(progress):
+        db = None
+        if req.audio_path:
+            progress("Measuring how lively each part of the episode is")
+            db = levels(req.audio_path, None, 10)["db"]
+        return {"model": model, **run_selects(units, ask, req.speakers, db, 10, req.count, progress)}
+    return {"job": jobs.start(work)}
+
+
+@app.get("/jobs/{job_id}")
+def job_status(job_id: str) -> dict:
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "No such job. The engine may have restarted; start it again.")
+    return job

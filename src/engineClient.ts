@@ -101,9 +101,24 @@ export interface ChaptersResult { model: string; valid: boolean; chapters: { sta
 type Units = { id: number; start: number; end: number; text: string }[]
 type AiOpts = { provider: AiProvider; apiKey?: string }
 
-/** The few clips worth cutting from a whole episode. Reads everything, so it can take a few minutes. */
-export const findSelects = (units: Units, opts: AiOpts & { audioPath?: string }) =>
-  call<SelectsResult>('/selects', { units, provider: opts.provider, api_key: opts.apiKey || undefined, audio_path: opts.audioPath }, 30 * 60_000)
+interface Job<T> { status: 'running' | 'done' | 'error'; step: string; result: T | null; error: string | null; seconds: number }
+
+/**
+ * The few clips worth cutting from a whole episode. Reads everything, so it takes
+ * minutes on a local model: runs as an engine job, polled, reporting each step.
+ */
+export async function findSelects(units: Units, opts: AiOpts & { audioPath?: string }, onStep: (step: string) => void = () => {}): Promise<SelectsResult> {
+  const { job } = await call<{ job: string }>('/jobs/selects', { units, provider: opts.provider, api_key: opts.apiKey || undefined, audio_path: opts.audioPath }, 30_000)
+  const deadline = Date.now() + 60 * 60_000
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2500))
+    const s = await call<Job<SelectsResult>>(`/jobs/${job}`, undefined, 10_000)
+    if (s.status === 'done' && s.result) return s.result
+    if (s.status === 'error') throw new Error(s.error ?? 'The selects pass failed.')
+    onStep(`${s.step} (${Math.floor(s.seconds / 60)}:${String(s.seconds % 60).padStart(2, '0')})`)
+  }
+  throw new Error('The selects pass took over an hour and was abandoned.')
+}
 
 export const makeChapters = (units: Units, opts: AiOpts) =>
   call<ChaptersResult>('/chapters', { units, provider: opts.provider, api_key: opts.apiKey || undefined }, 10 * 60_000)

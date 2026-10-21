@@ -66,18 +66,33 @@ describe('groupLines / summarise / cutsToDecisions', () => {
 })
 
 describe('speechUnits', () => {
-  it('splits at sentence ends, segment changes and long gaps', () => {
+  it('splits at sentence ends and real pauses, not at transcriber segment breaks', () => {
     const words = [
       w('So', 0, 0.2), w('the,', 0.3, 0.5), w('okay.', 0.6, 0.9),
-      w('Today', 1.0, 1.3), w('we', 1.4, 1.5), w('talk', 2.6, 2.9),
-      w('Next', 3.0, 3.2, false, '0:1'), w('one?"', 3.3, 3.6, false, '0:1'),
+      w("What's", 1.0, 1.3), w('important', 1.4, 1.6), w('is', 1.8, 1.9, false, '0:1'), w('going.', 2.0, 2.4, false, '0:1'),
+      w('Then', 4.0, 4.2), w('next?"', 4.3, 4.6),
     ]
     expect(speechUnits(words)).toEqual([
       { id: 0, start: 0, end: 0.9, text: 'So the, okay.' },
-      { id: 1, start: 1.0, end: 1.5, text: 'Today we' },
-      { id: 2, start: 2.6, end: 2.9, text: 'talk' },
-      { id: 3, start: 3.0, end: 3.6, text: 'Next one?"' },
+      { id: 1, start: 1.0, end: 2.4, text: "What's important is going." },
+      { id: 2, start: 4.0, end: 4.6, text: 'Then next?"' },
     ])
+  })
+
+  it('breaks a long unpunctuated run at its biggest pause', () => {
+    // 30 words at 0.6 s each with 0.1 s breaths, one 0.9 s pause after word 11, no punctuation.
+    const words = Array.from({ length: 30 }, (_, i) => w(`w${i}`, i * 0.7 + (i > 11 ? 0.8 : 0), i * 0.7 + 0.6 + (i > 11 ? 0.8 : 0)))
+    const units = speechUnits(words)
+    expect(units[0].text.split(' ')).toHaveLength(12)
+    expect(units.every((u) => u.end - u.start <= 20)).toBe(true)
+    expect(units.map((u) => u.text).join(' ').split(' ')).toHaveLength(30)
+  })
+
+  it('never breaks continuous speech with no pauses into one-word lines', () => {
+    const words = Array.from({ length: 120 }, (_, i) => w(`w${i}`, i * 0.3, i * 0.3 + 0.3)) // 36 s, zero gaps
+    const units = speechUnits(words)
+    expect(units.every((u) => u.text.split(' ').length >= 10)).toBe(true)
+    expect(units.every((u) => u.end - u.start <= 20)).toBe(true)
   })
 })
 

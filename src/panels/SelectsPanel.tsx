@@ -66,7 +66,7 @@ export function SelectsPanel({ onCreated }: { onCreated: (name: string) => void 
       setStatus('thinking'); setStep('Reading the whole episode and comparing clips (a few minutes)')
       const units = speechUnits(w)
       const res = await logged('Find clips', { lines: units.length, provider: provider() },
-        () => findSelects(units, { provider: provider(), apiKey: apiKey(), audioPath }),
+        () => findSelects(units, { provider: provider(), apiKey: apiKey(), audioPath }, setStep),
         (r) => `${r.model}: ${r.proposed} proposed, ${r.valid} valid, top ${r.clips.length}: ${r.clips.map((c) => `${formatTime(c.pieces[0].start)} ${c.title}`).join(' | ')}`)
       setClips(res.clips); setDropped(new Set())
       setNote(`${res.proposed} proposed, ${res.valid} passed the checks, ${res.shortlisted} compared head to head.`)

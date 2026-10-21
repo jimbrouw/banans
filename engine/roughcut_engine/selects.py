@@ -8,13 +8,15 @@
 3. Signals: how lively the passage is compared with the rest of the episode (given
    the episode audio), and the opening line's hook score (yt-script's hookscore),
    which is shown as a tip and only lightly weighted.
-4. Pairwise ranking: the model compares candidates two at a time over a few
-   Swiss-style rounds; wins decide the order. More reliable than scoring each alone.
+4. Pairwise ranking: every candidate that passes goes into Swiss-style rounds
+   (about log2 n + 1); the model compares two at a time and wins decide the order.
+   More reliable than scoring each alone, and no heuristic shortlist cuts first.
 5. Keep five with a mix of types (story, opinion, tip, moment).
 
 The model only ever names line ids; every time and duration is worked out here.
 """
 
+import math
 import re
 import statistics
 from dataclasses import dataclass, field
@@ -28,9 +30,8 @@ Ask = Callable[[str, str, dict], dict]
 TYPES = ["story", "opinion", "tip", "moment"]
 MIN_SECONDS, MAX_SECONDS = 20.0, 60.0
 HOOK_REACH = 45.0      # a pulled-forward hook line must come from at most this far after the passage
-CHUNK, OVERLAP = 260, 30
-ROUNDS = 3
-SHORTLIST = 10
+CHUNK, OVERLAP = 90, 12   # small slices: an 8B model skims when given 25 minutes at once
+MAX_ROUNDS = 6
 
 CANDIDATE_SCHEMA = {
     "type": "object",
@@ -84,7 +85,7 @@ Each line is [id] mm:ss Speaker: text. For each candidate give:
 - title: a working title under 60 characters, specific (a number, a name or a concrete detail beats an adjective).
 - why: one sentence on why it works, for the editor.
 
-Give the 4 to 6 best candidates in this part of the episode, or fewer if fewer qualify. Never invent ids."""
+Give the 3 to 5 best candidates in this part of the episode, or fewer if fewer qualify. Carry each passage through to its payoff line rather than stopping early. Never invent ids."""
 
 JUDGE_SYSTEM = f"""You are a senior podcast clip producer choosing which of two clips to publish first as a short vertical video.
 
@@ -137,9 +138,22 @@ def chunks(units: list[Unit]) -> list[list[Unit]]:
 
 def build(raw: dict, by_id: dict[int, Unit]) -> Candidate | None:
     """A model proposal → a checked candidate with episode-time pieces, or None if it breaks the rules."""
+    return check(raw, by_id)[0]
+
+
+def check(raw: dict, by_id: dict[int, Unit]) -> tuple[Candidate | None, str]:
+    """Like build, but also says why a proposal was dropped (for the eval)."""
     first, last, hook = raw.get("first"), raw.get("last"), raw.get("hook_line", -1)
     if not isinstance(first, int) or not isinstance(last, int) or first not in by_id or last not in by_id or last < first:
-        return None
+        return None, "line ids that don't exist"
+    # A passage that stops before its payoff is a fragment: carry it on through the
+    # following sentences while the speech flows (no long pause), up to the minimum.
+    # (The editor's "going for it" clip ran on into its payoff; the model stopped at 18 s.)
+    extended = False
+    while (by_id[last].end - by_id[first].start < MIN_SECONDS and last + 1 in by_id
+           and by_id[last + 1].start - by_id[last].end < 1.5 and by_id[last + 1].end - by_id[first].start <= MAX_SECONDS):
+        last += 1
+        extended = True
     run = [by_id[i] for i in range(first, last + 1) if i in by_id]
     hook_unit = by_id.get(hook) if isinstance(hook, int) and hook >= 0 else None
     if hook_unit and not (first <= hook_unit.id <= last or 0 <= hook_unit.start - by_id[last].end <= HOOK_REACH):
@@ -158,10 +172,10 @@ def build(raw: dict, by_id: dict[int, Unit]) -> Candidate | None:
                   str(raw.get("idea", ""))[:80], str(raw.get("title", ""))[:100], str(raw.get("why", ""))[:240],
                   pieces=[(round(s, 2), round(e, 2)) for s, e in pieces])
     if not MIN_SECONDS <= c.duration <= MAX_SECONDS:
-        return None
+        return None, f"{'too short' if c.duration < MIN_SECONDS else 'too long'} ({c.duration:.0f}s)"
     c.opening = (hook_unit or run[0]).text
     c.text = " ".join(u.text for u in ([hook_unit] if hook_unit else []) + rest)
-    return c
+    return c, "passed checks (extended to finish the thought)" if extended else ""
 
 
 def overlap(a: Candidate, b: Candidate) -> float:
@@ -195,13 +209,21 @@ def energy_scores(cands: list[Candidate], db: list[float], rate: int) -> None:
             c.energy = round(max(0.0, min(100.0, 50 + 6 * lively)), 1)
 
 
-def swiss(cands: list[Candidate], ask: Ask, rounds: int = ROUNDS) -> None:
+def rounds_for(n: int) -> int:
+    """Enough Swiss rounds to sort n candidates (about log2 n, plus one), capped."""
+    return max(1, min(MAX_ROUNDS, math.ceil(math.log2(max(n, 2))) + 1))
+
+
+def swiss(cands: list[Candidate], ask: Ask, rounds: int | None = None, progress: Callable[[str], None] = lambda s: None) -> None:
     """Pairwise comparisons over a few rounds; each candidate meets a similar-ranked one each round."""
     def clip_block(c: Candidate) -> str:
         return f"{round(c.duration)}s, {c.type}. Opening line: \"{c.opening}\"\nFull text: {c.text}"
+    rounds = rounds or rounds_for(len(cands))
     played: set[tuple[int, int]] = set()
     sat_out: set[int] = set()
-    for _ in range(rounds):
+    total = rounds * (len(cands) // 2)
+    done = 0
+    for r in range(rounds):
         pool = sorted(cands, key=lambda c: (-c.wins, -c.prelim))
         if len(pool) % 2:  # odd count: the lowest-ranked who hasn't sat out yet sits this round out
             bye = next((c for c in reversed(pool) if id(c) not in sat_out), pool[-1])
@@ -212,6 +234,8 @@ def swiss(cands: list[Candidate], ask: Ask, rounds: int = ROUNDS) -> None:
             b = next((c for c in pool if (id(a), id(c)) not in played), pool[0])  # avoid rematches
             pool.remove(b)
             played |= {(id(a), id(b)), (id(b), id(a))}
+            done += 1
+            progress(f"Comparing clips head to head: {done} of {total}")
             verdict = ask(JUDGE_SYSTEM, f"Clip A: {clip_block(a)}\n\nClip B: {clip_block(b)}", JUDGE_SCHEMA)
             (a if verdict.get("winner") == "A" else b).wins += 1
 
@@ -232,25 +256,47 @@ def pick_varied(ranked: list[Candidate], n: int) -> list[Candidate]:
 
 
 def run_selects(units: list[Unit], ask: Ask, speakers: dict[int, str] | None = None,
-                audio_db: list[float] | None = None, audio_rate: int = 10, count: int = 5) -> dict:
+                audio_db: list[float] | None = None, audio_rate: int = 10, count: int = 5,
+                progress: Callable[[str], None] = lambda s: None) -> dict:
     if len(units) < 10:
         raise EditError("Not enough transcript to find clips in.")
     speakers = speakers or {}
     by_id = {u.id: u for u in units}
     raw: list[dict] = []
-    for part in chunks(units):
+    parts = chunks(units)
+    for n, part in enumerate(parts, 1):
+        progress(f"Reading the episode for clips: part {n} of {len(parts)} ({mmss(part[0].start)}–{mmss(part[-1].end)})")
         raw += ask(CANDIDATE_SYSTEM, f"Transcript:\n{lines_text(part, speakers)}", CANDIDATE_SCHEMA).get("candidates", [])
     proposed = len(raw)
-    cands = [c for c in (build(r, by_id) for r in raw) if c]
+    # Every proposal and what happened to it, so an eval can tell "never proposed" from "dropped".
+    record: list[dict] = []
+    cands: list[Candidate] = []
+    for r in raw:
+        c, reason = check(r, by_id)
+        first, last = r.get("first"), r.get("last")
+        span = [by_id[first].start, by_id[last].end] if first in by_id and last in by_id else None
+        record.append({"title": str(r.get("title", ""))[:100], "span": span, "status": reason if not c else (reason or "passed checks"), "candidate": c})
+        if c:
+            cands.append(c)
     for c in cands:
         parts, verdict, formula, _ = hookscore.score(c.opening)
         weakest = min(parts, key=parts.get)
         c.hook_score = {"verdict": verdict, "band": hookscore.band(verdict), "weakest": weakest, "fix": hookscore.FIX[weakest], "formula": formula}
     if audio_db:
         energy_scores(cands, audio_db, audio_rate)
-    shortlist = dedupe(cands)[:SHORTLIST]
+    # Every candidate that passes the checks goes into the head-to-head rounds. A shortlist
+    # cut by liveliness and hook score threw out both of this editor's published moments.
+    deduped = dedupe(cands)
+    shortlist = deduped
+    for entry in record:
+        c = entry.pop("candidate")
+        if c and c not in deduped:
+            entry["status"] = "dropped: overlaps a better pick or repeats its idea"
+        elif c and c not in shortlist:
+            entry["status"] = "passed, but not compared"
+    progress(f"{len(cands)} of {proposed} proposals passed the checks; shortlisted {len(shortlist)}")
     if len(shortlist) > 1:
-        swiss(shortlist, ask)
+        swiss(shortlist, ask, progress=progress)
     ranked = sorted(shortlist, key=lambda c: (-c.wins, -c.prelim))
     clips = []
     for rank, c in enumerate(pick_varied(ranked, count), 1):
@@ -262,7 +308,13 @@ def run_selects(units: list[Unit], ask: Ask, speakers: dict[int, str] | None = N
             "hook_pulled_forward": c.hook is not None, "hook_score": c.hook_score, "energy": c.energy, "wins": c.wins,
             "lines": [c.first, c.last],
         })
-    return {"clips": clips, "proposed": proposed, "valid": len(cands), "shortlisted": len(shortlist)}
+    picked = {(c["lines"][0], c["lines"][1]) for c in clips}
+    for entry, r in zip(record, raw):
+        if (r.get("first"), r.get("last")) in picked:
+            entry["status"] = "picked"
+        elif entry["status"].startswith("passed checks"):
+            entry["status"] = "shortlisted, lost the head-to-head comparisons" + (" (extended)" if "extended" in entry["status"] else "")
+    return {"clips": clips, "proposed": proposed, "valid": len(cands), "shortlisted": len(shortlist), "proposals": record}
 
 
 CHAPTER_SCHEMA = {

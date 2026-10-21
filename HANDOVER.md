@@ -105,17 +105,24 @@ What a senior podcast clip producer does, instead of a pile of markers: read the
 
 ```
 SelectsPanel "Find the best clips"
-  └─ words: Premiere transcript (Whisper fallback) → reviewModel.speechUnits (sentence lines)
-  └─ engine POST /selects → selects.run_selects
-       1 candidates  model reads all lines (chunks of 260) against RUBRIC (the editor's brief +
+  └─ words: Premiere transcript (Whisper fallback) → reviewModel.speechUnits (real sentences: split at
+       . ? ! or a ≥1.2 s pause, never at transcriber segment breaks; unpunctuated runs broken at their
+       biggest pause, max 20 s)
+  └─ engine POST /jobs/selects → background job, polled with GET /jobs/{id} (step text shown in the
+       panel); a local model takes 5-10 min and fetch gives up on one response after 5
+  └─ selects.run_selects
+       1 candidates  model reads all lines in slices of 90 (8B models skim bigger ones) against RUBRIC (the editor's brief +
                      yt-shorts' picking rules): first/last line ids, an optional hook line pulled
                      forward from ≤45 s later, type (story/opinion/tip/moment), idea, title, why
-       2 checks      20–60 s, real ids; contiguous lines merge, pauses ≥1.5 s are cut
+       2 checks      20–60 s, real ids; a passage under 20 s is carried on through the following
+                     sentences while speech flows (the model tends to stop before the payoff);
+                     contiguous lines merge, pauses ≥1.5 s are cut
        3 signals     liveliness vs the episode's typical level (if the episode audio is one file);
                      hookscore of the opening line, weighted low (it rated this editor's own
                      published openings 34–43 "weak") and shown as a tip
        4 dedupe      overlap >30% of the shorter, or the same idea → keep the better one
-       5 rank        Swiss pairwise rounds (no rematches, rotating sit-out) on a shortlist of 10
+       5 rank        every passing candidate goes into Swiss pairwise rounds (≈log2 n + 1, max 6; no
+                     rematches, rotating sit-out). No heuristic shortlist: it cut both reference moments
        6 variety     top 5 with each type that has a contender; titles linted (yt-package title.py)
   └─ "Build N clip sequences" → reviewModel.withoutFillers → xmlCutHost.buildClipsViaXml
        (xmlCut.applyPiecesToXml keeps pieces in play order, so a pulled-forward hook plays first)
@@ -131,7 +138,9 @@ SelectsPanel "Find the best clips"
 ### Checking the picks against real clips
 
 `npm run eval:selects -- --episode eval-input/<ep> --refs "<folder of clip XMLs>" --episode-name "<edit sequence name>" [--provider claude]`
-reads the editor's published clips (FCP XML of each clip sequence; `src/eval/clipReference.ts` maps them to episode time, including pulled-forward hooks), runs the selects pass on `<ep>/transcript.json`, and scores it (`src/eval/selectsEval.ts`): found (pick covers ≥50% of the editor's clip), rank, overlap, edge error, same opening line. Needs Ollama or `ANTHROPIC_API_KEY`. Inputs and results are gitignored (they hold media paths and transcript text). The run log records which clips were kept or dropped on every build.
+reads the editor's published clips (FCP XML of each clip sequence; `src/eval/clipReference.ts` maps them to episode time, including pulled-forward hooks), runs the selects pass on `<ep>/transcript.json`, and scores it (`src/eval/selectsEval.ts`): found (pick covers ≥50% of the editor's clip), rank, overlap, edge error, same opening line. Needs Ollama or `ANTHROPIC_API_KEY`. It also prints, for each published clip, every proposal that touched it and its fate (never proposed / too short / dropped as overlap / lost the comparisons / picked), which is how the fixes above were found.
+
+First results on the Kate Courtney episode (qwen3:8b, 2 reference Shorts): 0/2 → 1/2 after four runs. The hit covers 65% of the editor's clip but starts 10 s earlier and ends 12 s earlier: the editor trims the preamble to the strongest line and runs on to the payoff. The miss reached the comparisons but its text is a stretch where Whisper dropped punctuation. Inputs and results are gitignored (they hold media paths and transcript text). The run log records which clips were kept or dropped on every build.
 
 ## Active sequence
 
