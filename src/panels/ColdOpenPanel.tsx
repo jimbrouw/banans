@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { AlertTriangle, Check, Scissors, Sparkles } from 'lucide-react'
 import { Press } from '../ui'
-import { errorMessage, formatTime, openExternal } from '../uiHelpers'
+import { errorMessage, formatTime } from '../uiHelpers'
+import { NO_CLAUDE_KEY, readSetting, SETTINGS } from '../settings'
 import { premiere } from '../premiereAdapter'
 import { findColdOpens } from '../coldOpenFinder'
 import { logged } from '../runLog'
@@ -9,18 +10,18 @@ import type { ColdOpenOption } from '../coldOpenFinder'
 import type { TranscriptSegment } from '../types'
 
 export function ColdOpenPanel({ sequenceId, segments, onCreated }: { sequenceId: string; segments: TranscriptSegment[]; onCreated: (name: string) => void }) {
-  const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem('roughcut.anthropicKey') ?? '' } catch { return '' } })
   const [coldOpens, setColdOpens] = useState<ColdOpenOption[]>([])
   const [coldOpenStatus, setColdOpenStatus] = useState<'idle' | 'finding' | 'done' | 'assembling' | 'error'>('idle')
   const [coldOpenError, setColdOpenError] = useState('')
   const [coldOpenResult, setColdOpenResult] = useState('')
 
-  const saveApiKey = (key: string) => { setApiKey(key); try { localStorage.setItem('roughcut.anthropicKey', key) } catch { /* localStorage unavailable */ } }
 
   const findColdOpenHooks = async () => {
     if (!segments.length) { setColdOpenError('Analyze a transcript first so there is something to scan.'); setColdOpenStatus('error'); return }
     try {
       setColdOpenError(''); setColdOpenResult(''); setColdOpenStatus('finding')
+      const apiKey = readSetting(SETTINGS.claudeKey)
+      if (!apiKey) throw new Error(NO_CLAUDE_KEY)
       const options = await logged('Cold Open find', { segments: segments.length }, () => findColdOpens(segments, apiKey), (o) => `${o.length} options`)
       setColdOpens(options)
       setColdOpenStatus('done')
@@ -48,11 +49,10 @@ export function ColdOpenPanel({ sequenceId, segments, onCreated }: { sequenceId:
 
   return (
     <div className="cold-open">
-      <div className="cold-open-head"><Sparkles size={16} /><strong>YouTube Cold Open Finder</strong><span className="hint">AI · Claude</span></div>
-      <a className="api-key-link" role="link" tabIndex={0} onClick={() => openExternal('https://console.anthropic.com/settings/keys')}>Get an API key at console.anthropic.com →</a>
-      <input className="api-key" type="password" autoComplete="off" placeholder="Anthropic API key (sk-ant-…)" value={apiKey} onChange={(e) => saveApiKey(e.target.value)} />
-      <Press className="rough-cut" style={{ marginTop: 8, backgroundColor: '#b57bed', color: '#fff' }} disabled={coldOpenStatus === 'finding' || coldOpenStatus === 'assembling'} onClick={findColdOpenHooks}>
-        <Sparkles size={19} />{coldOpenStatus === 'finding' ? 'Analysing transcript…' : 'Find 3 Cold Opens (AI)'}
+      <h3 className="block-title">Cold opens</h3>
+      <p className="lede">Three 20 to 30 second hooks to open the video with, cut across cameras. Uses Claude.</p>
+      <Press className="secondary" disabled={coldOpenStatus === 'finding' || coldOpenStatus === 'assembling'} onClick={findColdOpenHooks}>
+        <Sparkles size={16} />{coldOpenStatus === 'finding' ? 'Reading the transcript…' : 'Find cold opens'}
       </Press>
       {coldOpenStatus === 'finding' && (
         <div className="cold-open-thinking">

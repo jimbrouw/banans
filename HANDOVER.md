@@ -29,25 +29,27 @@ It runs inside the **Adobe UXP runtime** — a sandboxed, browser-like environme
 
 ```
 src/
-  App.tsx                      Shell: shared state (sequence, settings, transcript, decisions)
-  panels/                      One component per panel section; feature-local state lives here
-    SequencePanel.tsx          Active sequence + speaker mapping
-    AnalysisPanel.tsx          Analysis toggles/settings + Analyse button
-    ResultsPanel.tsx           Marker list, filters, export, Create Marked Review Cut
-    ColdOpenPanel.tsx          Cold Open Finder (API key, options, assemble)
-    AutoCutPanel.tsx           Detect cameras, autopilot options, apply
-    SpikePanel.tsx             Phase 0 API probe runner (Premiere only)
+  App.tsx                      Shell: header (sequence picker, engine pill), tab bar, shared state
+  settings.ts                  Per-machine settings in localStorage: Claude key, AI provider, last tab
+  panels/                      One component per tab; feature-local state lives in each
+    Chrome.tsx                 SequencePicker (header) + TabBar (tabs show live status)
+    ReviewPanel.tsx            Clean up tab: pauses, fillers, retakes, Chat Edit, remove cuts
+    MulticamPanel.tsx          Multicam tab: 1 cameras, 2 who's on which camera, 3 cut style
+    PodcastMode.tsx            MicSpeakersStep: the "Mic tracks" option in Multicam step 2
+    AnalysisPanel.tsx          Clips tab: find clips/chapters (options folded away)
+    ResultsPanel.tsx           Clips tab: marker list, filters, export, mark on a copy
+    ColdOpenPanel.tsx          Clips tab: Cold Open finder (uses the Setup tab's Claude key)
+    SetupPanel.tsx             Setup tab: engine status, Claude key, log path, API spike
+    SpikePanel.tsx             Premiere API probe runner (Premiere only, in Setup)
     EngineStatus.tsx           Header pill: is the local engine reachable?
-    ReviewPanel.tsx            Clean-up review: transcript, pause/filler cuts, toggle, marked cut
   reviewModel.ts               Pure: source→sequence time mapping, cut building/merging, summary
   reviewHost.ts                Premiere reads for review: A1 clips + media paths, set playhead
   reviewDemo.ts                Canned transcript, AI result and mic levels for the browser demo
   podcastSpeakers.ts           Pure: mic loudness → active speaker turns (Podcast Mode fallback)
-  panels/PodcastMode.tsx       Podcast Mode block in Auto-Cut: Premiere labels first, mic fallback
   xmlCut.ts                    Pure: remove time ranges from a Premiere FCP XML export
   xmlCutHost.ts                Premiere glue: export XML → xmlCut → import → open new sequence
   engineClient.ts              Typed fetch client for the local engine (localhost:7317)
-  ui.tsx                       Shared components: Press, Toggle
+  ui.tsx                       Shared components: Press, Toggle, Options (fold-away settings)
   sequenceNames.ts             Pure: numbered names for generated sequences ("Seq — Auto Cut 03 (…)")
   projectBin.ts                Files generated sequences into the "RoughCut" bin
   runLog.ts                    Run log: one line per action, in the plugin's data folder
@@ -91,6 +93,10 @@ npm run build      # Production bundle → dist/
 ```
 
 ---
+
+## Panel layout
+
+Four tabs, all kept mounted so switching never loses work (the last tab is remembered): **Clean up**, **Multicam**, **Clips**, **Setup**. Each tab has one main action; settings most runs don't need sit under a folded **Options** line that summarises them. Once a tab has results, its "find" button shrinks to a link and the next step (remove cuts, cut to a new sequence, mark on a copy) becomes the main button. The tab bar shows live status (`9 cuts`, `3 cams`, `28`). The Claude key is entered once in Setup.
 
 ## Active sequence
 
@@ -153,14 +159,14 @@ ReviewPanel "Find pauses & fillers"
 
 ### Podcast Mode (ROADMAP Phase 5)
 
-Who's talking, for the multicam autopilot (`AutoCutPanel` → `PodcastMode`):
+Who's talking, for the multicam autopilot: step 2 of the Multicam tab (`MulticamPanel`), with a Transcript / Mic tracks switch.
 
-1. **Premiere's speaker labels** (Speaker 1 / Speaker 2 from the Text panel) when the analysed transcript has at least two. The autopilot cuts on them through the existing Speaker mapping.
-2. **Mic fallback** when there are no labels, or the editor clicks "Use mic tracks instead":
+1. **Transcript:** Premiere's speaker labels ("Read speakers from transcript" fetches it if the Clips tab hasn't). One row per real speaker with talk share, each mapped to a detected track ("V1 file.mov"); defaults by name order (Speaker 1 → V1). A **Wide shot** picker (default: last track) is used for overlaps. The autopilot finds cameras by name, so `MulticamPanel` names cameras `cam-N` and the chosen wide camera `Wide`; the mapping is logged with each Auto Cut (`Speaker 1→V1, …, wide→V3`).
+2. **Mic tracks** (`MicSpeakersStep`), when there are no labels or they're wrong:
 ```
-"Find mic tracks"   reviewHost.getAudioTracks() → audio tracks with file clips
+"Choose mic tracks"  reviewHost.getAudioTracks() → audio tracks with file clips
   rows: Mic N = track + channel (Mix / Ch 1-4) → camera. One stereo track defaults to Ch 1 / Ch 2.
-"Detect speakers"   engine POST /levels per file+channel (dB, 10 per second, cached)
+"Find who talks when"  engine POST /levels per file+channel (dB, 10 per second, cached)
   └─ podcastSpeakers.placeEnvelope   each mic's clips placed on the sequence timeline
   └─ detectSpeakers   active = ≥12 dB over the mic's own floor (5th percentile) AND within 6 dB of
   │                    the loudest mic (rejects bleed, keeps crosstalk); gaps ≤0.6s bridged, turns <0.4s dropped
@@ -545,7 +551,7 @@ If any probe fails, the corresponding feature silently degrades (but the flat cl
 
 ## Known issues / next steps
 
-- **Speaker mapping is manual** — the user must assign Host/Guest → Camera 1/2. Auto-detection from clip names would be a quality-of-life improvement.
+- **Speaker → track mapping is manual** (sensible defaults by name order; nothing reads faces or clip names yet).
 - **No speaker labels** — when Premiere's transcript has none, Podcast Mode's mic fallback replaces the old camera rotation (rotation still happens if neither is used).
 - **Eval harness is offline only** — `src/eval/` scores hook options against FCP XML reference edits, but there is no CI gate on eval quality yet.
 - **Multicam clips not supported** — `detectSources` will error if the sequence contains a Multicam Source Clip rather than individual camera tracks on separate video tracks.

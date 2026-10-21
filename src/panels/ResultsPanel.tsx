@@ -17,7 +17,6 @@ export function ResultsPanel({ decisions, setDecisions, sequenceName, creating, 
   const [markerFilter, setMarkerFilter] = useState<'all' | 'promo' | 'shorts' | 'audio' | 'trims'>('all')
   const [sortBest, setSortBest] = useState(false)
   const selected = decisions.filter((d) => d.selected)
-  const counts = useMemo(() => Object.keys(markerMeta).map((type) => ({ type: type as MarkerType, count: decisions.filter((d) => d.type === type).length })).filter((x) => x.count), [decisions])
   const filteredDecisions = useMemo(() => {
     let list = decisions
     if (markerFilter === 'promo') list = decisions.filter((d) => ['social_clip', 'social_hook', 'audiogram'].includes(d.type))
@@ -58,21 +57,11 @@ export function ResultsPanel({ decisions, setDecisions, sequenceName, creating, 
 
   return (
     <>
-      <div className="result-heading">
-        <div className="score">{Math.round(decisions.reduce((sum, d) => sum + d.confidence, 0) / decisions.length * 100)}%</div>
-        <div>
-          <h2>Promo Package</h2>
-          <p className="promo-counts">
-            {promoSummary.shorts > 0 && <span style={{ color: '#69d59a' }}>{promoSummary.shorts} Shorts</span>}
-            {promoSummary.stories > 0 && <span style={{ color: '#f0a13b' }}>{promoSummary.stories} Stories</span>}
-            {promoSummary.audiograms > 0 && <span style={{ color: '#52cbc7' }}>{promoSummary.audiograms} Audiograms</span>}
-            <span style={{ color: 'var(--muted)' }}>{decisions.filter(d => !d.platforms?.length).length} markers</span>
-          </p>
-        </div>
-        <Press className="text-button export-btn" onClick={exportPromoMap}><Download size={13} /> Export</Press>
+      <div className="results-summary">
+        <span><strong>{decisions.length}</strong> found{promoSummary.shorts ? `, ${promoSummary.shorts} work as Shorts` : ''}{promoSummary.audiograms ? `, ${promoSummary.audiograms} as audiograms` : ''}</span>
+        <Press className="text-button" onClick={exportPromoMap}><Download size={13} /> Export list</Press>
       </div>
-      <div className="count-row">{counts.map(({ type, count }) => <span key={type}><i style={{ background: markerMeta[type].color }} />{count} {markerMeta[type].name}</span>)}</div>
-      <div className="marker-header"><h2>Proposed markers</h2><Press className="text-button" onClick={() => setDecisions((current) => current.map((d) => ({ ...d, selected: true })))}>Select all</Press></div>
+      <div className="marker-header"><span className="hint">Tick the ones to keep</span><Press className="text-button" onClick={() => setDecisions((current) => current.map((d) => ({ ...d, selected: true })))}>Select all</Press></div>
       <div className="filter-bar">
         {(['all', 'promo', 'shorts', 'audio', 'trims'] as const).map((f) => {
           const labels = { all: 'All', promo: 'Promo', shorts: 'Shorts', audio: 'Audio', trims: 'Trims' }
@@ -105,7 +94,7 @@ export function ResultsPanel({ decisions, setDecisions, sequenceName, creating, 
           <em style={{ color: meta.color }}>{Math.round(decision.confidence * 100)}%</em>
         </Press>
       })}</div>
-      <Press className="rough-cut" disabled={!selected.length || creating} onClick={onCreateRoughCut}><Sparkles size={19} />{creating ? 'Building review cut...' : created ? 'Marked review cut created' : `Create Marked Review Cut (${selected.length})`}</Press>
+      <Press className="primary results-action" disabled={!selected.length || creating} onClick={onCreateRoughCut}><Sparkles size={17} />{creating ? 'Adding markers…' : created ? 'Markers added to a copy' : `Mark ${selected.length} on a copy of the sequence`}</Press>
     </>
   )
 }

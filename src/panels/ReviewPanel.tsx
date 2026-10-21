@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Check, MessageSquare, Pause, Scissors, Sparkles, Wand2 } from 'lucide-react'
-import { Press, Toggle } from '../ui'
-import { errorMessage, formatTime, openExternal } from '../uiHelpers'
+import { Options, Press, Toggle } from '../ui'
+import { NO_CLAUDE_KEY, readSetting, SETTINGS, writeSetting } from '../settings'
+import { errorMessage, formatTime } from '../uiHelpers'
 import { aiEdit, detectSilences, ENGINE_OFF_MESSAGE, engineHealth, transcribeMedia } from '../engineClient'
 import type { AiProvider, SilenceRange } from '../engineClient'
 import { isPremiereHost, premiere } from '../premiereAdapter'
@@ -17,17 +18,14 @@ type Status = 'idle' | 'loading' | 'ready' | 'thinking' | 'creating' | 'cutting'
 const cutKey = (c: { start: number; end: number }) => `${c.start}-${c.end}`
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const overlaps = (a: { start: number; end: number }, b: { start: number; end: number }) => a.start < b.end && b.start < a.end
-const stored = (key: string, fallback: string) => { try { return localStorage.getItem(key) ?? fallback } catch { return fallback } }
-const store = (key: string, value: string) => { try { localStorage.setItem(key, value) } catch { /* localStorage unavailable */ } }
 
-export function ReviewPanel({ sequenceId, onCreated }: { sequenceId: string; onCreated: (name: string) => void }) {
+export function ReviewPanel({ sequenceId, onCreated, onStatus }: { sequenceId: string; onCreated: (name: string) => void; onStatus: (status: string) => void }) {
   const [settings, setSettings] = useState<ReviewSettings>(defaultReviewSettings)
   const [words, setWords] = useState<ReviewWord[]>([])
   const [silences, setSilences] = useState<SilenceRange[]>([])
   const [aiRemovals, setAiRemovals] = useState<AiRemoval[]>([])
   const [kept, setKept] = useState<Set<string>>(new Set()) // cuts the editor switched off
-  const [provider, setProvider] = useState<AiProvider>(() => stored('roughcut.aiProvider', 'ollama') as AiProvider)
-  const [apiKey, setApiKey] = useState(() => stored('roughcut.anthropicKey', '')) // shared with the Cold Open Finder
+  const [provider, setProvider] = useState<AiProvider>(() => readSetting(SETTINGS.aiProvider, 'ollama') as AiProvider)
   const [preferLastTake, setPreferLastTake] = useState(true)
   const [chat, setChat] = useState('')
   const [aiNote, setAiNote] = useState('')
@@ -44,6 +42,7 @@ export function ReviewPanel({ sequenceId, onCreated }: { sequenceId: string; onC
   const lines = useMemo(() => groupLines(words), [words])
   const units = useMemo(() => speechUnits(words), [words])
   const summary = summarise(cuts)
+  useEffect(() => { onStatus(words.length ? `${summary.count} cuts` : '') }, [words.length, summary.count, onStatus])
   const runDetail = `${summary.count} cuts · ${summary.seconds.toFixed(1)}s${aiRemovals.length ? ' · AI' : ''}`
   const patch = (p: Partial<ReviewSettings>) => setSettings((s) => ({ ...s, ...p }))
   const toggleCut = (c: ReviewCut) => setKept((prev) => { const next = new Set(prev); if (next.has(cutKey(c))) next.delete(cutKey(c)); else next.add(cutKey(c)); return next })
@@ -112,8 +111,9 @@ export function ReviewPanel({ sequenceId, onCreated }: { sequenceId: string; onC
         }
         throw new Error(ENGINE_OFF_MESSAGE)
       }
+      if (provider === 'claude' && !readSetting(SETTINGS.claudeKey)) throw new Error(NO_CLAUDE_KEY)
       const res = await logged(instruction ? 'Chat Edit' : 'AI pass', { provider, lines: units.length, instruction, lastTake: preferLastTake },
-        () => aiEdit(units, { provider, apiKey, instruction, preferLastTake }),
+        () => aiEdit(units, { provider, apiKey: readSetting(SETTINGS.claudeKey), instruction, preferLastTake }),
         (r) => `${r.model}: ${r.removals.length} cuts · ${r.keep_ids.length} kept`)
       const found: AiRemoval[] = res.removals.map(({ start, end, reason, note }) => ({ start, end, reason, note }))
       if (!instruction) {
@@ -174,44 +174,39 @@ export function ReviewPanel({ sequenceId, onCreated }: { sequenceId: string; onC
     .sort((a, b) => a.at - b.at)
 
   return (
-    <section className="section">
-      <div className="section-title"><h2>Clean-up review</h2><span className="hint">Premiere transcript · pauses, fillers, retakes</span></div>
-      <div className="compact-settings">
-        <label>Min pause <select value={settings.minSilence} onChange={(e) => patch({ minSilence: Number(e.target.value) })}><option value="0.4">0.4s</option><option value="0.6">0.6s</option><option value="1">1.0s</option><option value="1.5">1.5s</option></select></label>
-        <label>Breathing room <select value={settings.padding} onChange={(e) => patch({ padding: Number(e.target.value) })}><option value="0.06">Tight</option><option value="0.12">Natural</option><option value="0.2">Loose</option></select></label>
-      </div>
-      <div className="analysis-options">
-        <label><div><strong>Cut filler words</strong><span>um, uh, er, hmm</span></div><Toggle checked={settings.cutFillers} onChange={() => patch({ cutFillers: !settings.cutFillers })} /></label>
-      </div>
-      <Press className="primary" onClick={load} disabled={busy}>
-        <Wand2 size={17} />{status === 'loading' ? step : words.length ? 'Re-run clean-up' : 'Find pauses & fillers'}
-      </Press>
-      {sourceNote && <p className="hint review-note">{sourceNote}</p>}
+    <div className="tab-body">
+      {words.length > 0 && status !== 'loading'
+        ? <Press className="text-button" onClick={load} disabled={busy}><Wand2 size={13} /> Find again</Press>
+        : <>
+            <p className="lede">Finds pauses and um/uh in Premiere's transcript of A1, plus retakes with AI. Review the cuts, then cut to a new sequence.</p>
+            <Press className="primary" onClick={load} disabled={busy}><Wand2 size={17} />{status === 'loading' ? step : 'Find pauses and fillers'}</Press>
+          </>}
+      {sourceNote && <p className="footnote">{sourceNote}</p>}
+      <Options summary={`Pauses over ${settings.minSilence}s, ${settings.cutFillers ? 'fillers cut' : 'fillers kept'}, AI: ${provider === 'claude' ? 'Claude' : 'Ollama'}`}>
+        <div className="compact-settings">
+          <label>Shortest pause <select value={settings.minSilence} onChange={(e) => patch({ minSilence: Number(e.target.value) })}><option value="0.4">0.4s</option><option value="0.6">0.6s</option><option value="1">1.0s</option><option value="1.5">1.5s</option></select></label>
+          <label>Breathing room <select value={settings.padding} onChange={(e) => patch({ padding: Number(e.target.value) })}><option value="0.06">Tight</option><option value="0.12">Natural</option><option value="0.2">Loose</option></select></label>
+          <label>AI for retakes <select value={provider} onChange={(e) => { const p = e.target.value as AiProvider; setProvider(p); writeSetting(SETTINGS.aiProvider, p) }}><option value="ollama">Ollama, on this Mac</option><option value="claude">Claude, your API key</option></select></label>
+        </div>
+        <div className="analysis-options">
+          <label><div><strong>Cut filler words</strong><span>um, uh, er, hmm</span></div><Toggle checked={settings.cutFillers} onChange={() => patch({ cutFillers: !settings.cutFillers })} /></label>
+          <label><div><strong>Keep the last take</strong><span>Off keeps the best take instead</span></div><Toggle checked={preferLastTake} onChange={() => setPreferLastTake((v) => !v)} /></label>
+        </div>
+      </Options>
       {error && <div className="error"><AlertTriangle size={16} />{error}</div>}
 
       {words.length > 0 && <>
-        <div className="ai-pass">
-          <div className="ai-pass-head"><Sparkles size={15} /><strong>AI pass</strong><span className="hint">retakes · false starts · repeats</span></div>
-          <div className="compact-settings">
-            <label>Model <select value={provider} onChange={(e) => { const p = e.target.value as AiProvider; setProvider(p); store('roughcut.aiProvider', p) }}><option value="ollama">Ollama (local, free)</option><option value="claude">Claude (your API key)</option></select></label>
-          </div>
-          {provider === 'claude' && <>
-            <a className="api-key-link" role="link" tabIndex={0} onClick={() => openExternal('https://console.anthropic.com/settings/keys')}>Get an API key at console.anthropic.com →</a>
-            <input className="api-key" type="password" autoComplete="off" placeholder="Anthropic API key (sk-ant-…)" value={apiKey} onChange={(e) => { setApiKey(e.target.value); store('roughcut.anthropicKey', e.target.value) }} />
-          </>}
-          <div className="analysis-options">
-            <label><div><strong>Keep the last take</strong><span>Off: keep the best take instead</span></div><Toggle checked={preferLastTake} onChange={() => setPreferLastTake((v) => !v)} /></label>
-          </div>
-          <Press className="text-button ai-run" disabled={busy} onClick={() => runAi()}>
-            <Sparkles size={14} />{status === 'thinking' && !chat ? 'Reading the transcript…' : aiRemovals.length ? 'Run AI pass again' : 'Find retakes & repeats'}
+        <div className="ai-row">
+          <Press className="secondary small" disabled={busy} onClick={() => runAi()}>
+            <Sparkles size={14} />{status === 'thinking' && !chat ? 'Reading the transcript…' : aiRemovals.length ? 'Find retakes again' : 'Find retakes and repeats'}
           </Press>
-          <div className="chat-edit">
-            <MessageSquare size={14} />
-            <input type="text" placeholder="Chat edit: “cut the bit about the mic”, “keep the dog story”" value={chat} onChange={(e) => setChat(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && chat.trim() && !busy) runAi(chat.trim()) }} />
-            <Press className="text-button" disabled={!chat.trim() || busy} onClick={() => runAi(chat.trim())}>{status === 'thinking' && chat ? '…' : 'Apply'}</Press>
-          </div>
-          {aiNote && <p className="hint ai-note">{aiNote}</p>}
         </div>
+        <div className="chat-edit">
+          <MessageSquare size={14} />
+          <input type="text" placeholder="Tell it what to cut or keep" value={chat} onChange={(e) => setChat(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && chat.trim() && !busy) runAi(chat.trim()) }} />
+          <Press className="text-button" disabled={!chat.trim() || busy} onClick={() => runAi(chat.trim())}>{status === 'thinking' && chat ? '…' : 'Apply'}</Press>
+        </div>
+        {aiNote && <p className="footnote">{aiNote}</p>}
 
         <div className="review-summary">
           <span><strong>{summary.count}</strong> cuts</span>
@@ -234,15 +229,15 @@ export function ReviewPanel({ sequenceId, onCreated }: { sequenceId: string; onC
                 {row.cut.reasons.includes('silence') && row.cut.reasons.length === 1 ? <Pause size={11} /> : <Sparkles size={11} />}{row.cut.label}<span className="review-pause-state">{row.cut.active ? 'cut' : 'kept'}</span>
               </Press>)}
         </div>
-        <Press className="rough-cut" disabled={!summary.count || busy} onClick={removeCuts}>
-          <Scissors size={18} />{status === 'cutting' ? 'Cutting…' : `Remove ${summary.count} cuts → new sequence`}
+        <Press className="primary results-action" disabled={!summary.count || busy} onClick={removeCuts}>
+          <Scissors size={18} />{status === 'cutting' ? 'Cutting…' : `Remove ${summary.count} cuts in a new sequence`}
         </Press>
         <Press className="text-button file-import" disabled={!summary.count || busy} onClick={createMarkedCut}>
-          {status === 'creating' ? 'Writing markers…' : 'Or mark them only (no cuts)'}
+          {status === 'creating' ? 'Adding markers…' : 'Mark them instead'}
         </Press>
         <p className="hint review-note">Both build a new sequence. Your original stays untouched. Transitions in the sequence are dropped from the cut version.</p>
         {status === 'created' && <div className="success"><Check size={16} /> {result}</div>}
       </>}
-    </section>
+    </div>
   )
 }
