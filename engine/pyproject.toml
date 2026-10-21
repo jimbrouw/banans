@@ -9,6 +9,7 @@ dependencies = [
   "mlx-whisper>=0.4",
   "anthropic>=1.17.0",
   "httpx>=0.28.1",
+  "numpy>=2.4.6",
 ]
 
 [project.scripts]

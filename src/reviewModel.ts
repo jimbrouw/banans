@@ -40,6 +40,21 @@ export function wordsForClip(words: EngineWord[], clip: SourceClip, clipIndex: n
   return mapToSequence(words, clip).map((w) => ({ text: w.text, start: w.start, end: w.end, filler: w.filler, segment: `${clipIndex}:${w.segment}` }))
 }
 
+/**
+ * Pauses from the transcript alone: gaps between consecutive words. Used when
+ * the local engine isn't running to measure silence in the audio itself.
+ */
+export function gapSilences(words: ReviewWord[], minGap = 0.3): SilenceRange[] {
+  const sorted = [...words].sort((a, b) => a.start - b.start)
+  const gaps: SilenceRange[] = []
+  for (let i = 1; i < sorted.length; i++) {
+    const start = sorted[i - 1].end
+    const end = sorted[i].start
+    if (end - start >= minGap) gaps.push({ start: round(start), end: round(end) })
+  }
+  return gaps
+}
+
 /** Remove the parts of `range` covered by any of `blockers`. */
 function subtract(range: SilenceRange, blockers: { start: number; end: number }[]): SilenceRange[] {
   let pieces = [range]

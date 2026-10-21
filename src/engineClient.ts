@@ -42,6 +42,12 @@ export const detectSilences = (path: string, opts: { noise_db?: number; min_sile
 export const transcribeMedia = (path: string, opts: { language?: string } = {}) =>
   call<TranscribeResult>('/transcribe', { path, ...opts }, 60 * 60_000)
 
+export interface LevelsResult { rate: number; channel: number | null; duration: number; db: number[] }
+
+/** Loudness over time for one mic (one file, optionally one channel), 10 values per second. */
+export const micLevels = (path: string, channel: number | null) =>
+  call<LevelsResult>('/levels', { path, channel, rate: 10 }, 10 * 60_000)
+
 export type AiProvider = 'ollama' | 'claude'
 export interface AiEditResult {
   provider: AiProvider

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .edit import EditError, Unit, ai_edit
+from .levels import levels
 from .media import MediaError
 from .silences import detect_silences
 from .transcribe import DEFAULT_MODEL, transcribe
@@ -22,6 +23,12 @@ class SilencesRequest(BaseModel):
     path: str
     noise_db: float = Field(-35.0, le=0)
     min_silence: float = Field(0.5, gt=0)
+
+
+class LevelsRequest(BaseModel):
+    path: str
+    channel: int | None = Field(None, ge=0, le=63)  # None = mix all channels
+    rate: int = Field(10, ge=1, le=100)
 
 
 class EditUnit(BaseModel):
@@ -57,6 +64,14 @@ def health() -> dict:
 def silences(req: SilencesRequest) -> dict:
     try:
         return detect_silences(req.path, req.noise_db, req.min_silence)
+    except MediaError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/levels")
+def levels_route(req: LevelsRequest) -> dict:
+    try:
+        return levels(req.path, req.channel, req.rate)
     except MediaError as e:
         raise HTTPException(400, str(e)) from e
 

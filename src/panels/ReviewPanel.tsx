@@ -5,9 +5,9 @@ import { errorMessage, formatTime, openExternal } from '../uiHelpers'
 import { aiEdit, detectSilences, engineHealth, transcribeMedia } from '../engineClient'
 import type { AiProvider, SilenceRange } from '../engineClient'
 import { isPremiereHost, premiere } from '../premiereAdapter'
-import { buildCuts, cutsToDecisions, defaultReviewSettings, groupLines, mapToSequence, speechUnits, summarise, wordsForClip } from '../reviewModel'
+import { buildCuts, cutsToDecisions, defaultReviewSettings, gapSilences, groupLines, mapToSequence, speechUnits, summarise, wordsForClip } from '../reviewModel'
 import type { AiRemoval, ReviewCut, ReviewSettings, ReviewWord } from '../reviewModel'
-import { getPrimaryAudioClips, setPlayhead } from '../reviewHost'
+import { getPremiereTranscriptWords, getPrimaryAudioClips, setPlayhead } from '../reviewHost'
 import { demoAiRemovals, demoClips, demoSilences, demoWords } from '../reviewDemo'
 import { removeCutsViaXml } from '../xmlCutHost'
 
@@ -30,6 +30,7 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
   const [preferLastTake, setPreferLastTake] = useState(true)
   const [chat, setChat] = useState('')
   const [aiNote, setAiNote] = useState('')
+  const [sourceNote, setSourceNote] = useState('')
   const [status, setStatus] = useState<Status>('idle')
   const [step, setStep] = useState('')
   const [error, setError] = useState('')
@@ -48,35 +49,47 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
 
   const load = async () => {
     try {
-      setError(''); setResult(''); setAiNote(''); setStatus('loading'); setKept(new Set()); setAiRemovals([])
+      setError(''); setResult(''); setAiNote(''); setSourceNote(''); setStatus('loading'); setKept(new Set()); setAiRemovals([])
       setStep('Reading A1 clips')
       const clips = await getPrimaryAudioClips()
       if (!clips) {
-        // Browser demo: no Premiere, show canned engine output.
-        setStep('Transcribing (demo)'); await wait(500)
+        // Browser demo: no Premiere, show canned transcript + pauses.
+        setStep('Reading transcript (demo)'); await wait(500)
         setWords(wordsForClip(demoWords, demoClips[0], 0)); setSilences(mapToSequence(demoSilences, demoClips[0]))
-        setStatus('ready'); return
+        setSourceNote('Demo transcript'); setStatus('ready'); return
       }
-      if (!await engineHealth()) throw new Error('The local engine isn\'t running. In Terminal: cd engine && uv run roughcut-engine')
 
-      const paths = [...new Set(clips.map((c) => c.path))]
-      const byPath = new Map<string, { words: Awaited<ReturnType<typeof transcribeMedia>>['words']; silences: SilenceRange[] }>()
-      for (const [i, path] of paths.entries()) {
-        setStep(`Transcribing ${i + 1}/${paths.length} (first run downloads the model)`)
-        const transcript = await transcribeMedia(path)
-        setStep(`Finding pauses ${i + 1}/${paths.length}`)
-        // Detect at the lowest threshold once; the min-pause setting filters locally.
-        const found = await detectSilences(path, { min_silence: 0.3 })
-        byPath.set(path, { words: transcript.words, silences: found.silences })
+      // 1. Premiere's own transcript (Text panel) — no download, no engine needed.
+      setStep('Reading Premiere transcript')
+      let nextWords = await getPremiereTranscriptWords()
+      const transcriptSource = nextWords.length ? 'Premiere transcript' : 'Whisper (local engine)'
+      const engineUp = !!await engineHealth()
+      if (!nextWords.length && !engineUp) {
+        throw new Error('No Premiere transcript on this sequence or its A1 clips. Transcribe it in Premiere’s Text panel, or start the local engine (cd engine && uv run roughcut-engine) to transcribe with Whisper.')
       }
-      const nextWords: ReviewWord[] = []
+
+      // 2. Pauses: measured in the audio when the engine is running, otherwise gaps between words.
       const nextSilences: SilenceRange[] = []
-      clips.forEach((clip, i) => {
-        const data = byPath.get(clip.path)!
-        nextWords.push(...wordsForClip(data.words, clip, i))
-        nextSilences.push(...mapToSequence(data.silences, clip))
-      })
+      if (engineUp) {
+        const paths = [...new Set(clips.map((c) => c.path))]
+        const whisperWords: ReviewWord[] = []
+        for (const [i, path] of paths.entries()) {
+          if (!nextWords.length) {
+            setStep(`Transcribing ${i + 1}/${paths.length} with Whisper (first run downloads the model)`)
+            const transcript = await transcribeMedia(path)
+            clips.forEach((clip, ci) => { if (clip.path === path) whisperWords.push(...wordsForClip(transcript.words, clip, ci)) })
+          }
+          setStep(`Finding pauses ${i + 1}/${paths.length}`)
+          // Detect at the lowest threshold once; the min-pause setting filters locally.
+          const found = await detectSilences(path, { min_silence: 0.3 })
+          clips.forEach((clip) => { if (clip.path === path) nextSilences.push(...mapToSequence(found.silences, clip)) })
+        }
+        if (!nextWords.length) nextWords = whisperWords.sort((a, b) => a.start - b.start)
+      } else {
+        nextSilences.push(...gapSilences(nextWords))
+      }
       setWords(nextWords); setSilences(nextSilences)
+      setSourceNote(`${transcriptSource} · pauses from ${engineUp ? 'the audio' : 'gaps between words (start the engine for exact pauses)'}`)
       setStatus('ready')
     } catch (reason) {
       setError(errorMessage(reason)); setStatus('error')
@@ -150,7 +163,7 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
 
   return (
     <section className="section">
-      <div className="section-title"><h2>Clean-up review</h2><span className="hint">Local engine · pauses, fillers, retakes</span></div>
+      <div className="section-title"><h2>Clean-up review</h2><span className="hint">Premiere transcript · pauses, fillers, retakes</span></div>
       <div className="compact-settings">
         <label>Min pause <select value={settings.minSilence} onChange={(e) => patch({ minSilence: Number(e.target.value) })}><option value="0.4">0.4s</option><option value="0.6">0.6s</option><option value="1">1.0s</option><option value="1.5">1.5s</option></select></label>
         <label>Breathing room <select value={settings.padding} onChange={(e) => patch({ padding: Number(e.target.value) })}><option value="0.06">Tight</option><option value="0.12">Natural</option><option value="0.2">Loose</option></select></label>
@@ -159,8 +172,9 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
         <label><div><strong>Cut filler words</strong><span>um, uh, er, hmm</span></div><Toggle checked={settings.cutFillers} onChange={() => patch({ cutFillers: !settings.cutFillers })} /></label>
       </div>
       <Press className="primary" onClick={load} disabled={busy}>
-        <Wand2 size={17} />{status === 'loading' ? step : words.length ? 'Re-run clean-up' : 'Transcribe & find pauses'}
+        <Wand2 size={17} />{status === 'loading' ? step : words.length ? 'Re-run clean-up' : 'Find pauses & fillers'}
       </Press>
+      {sourceNote && <p className="hint review-note">{sourceNote}</p>}
       {error && <div className="error"><AlertTriangle size={16} />{error}</div>}
 
       {words.length > 0 && <>

@@ -1,6 +1,6 @@
 # RoughCut Engine
 
-A local companion service for the RoughCut Premiere panel. UXP panels can't run binaries, but they can `fetch` localhost, so the heavy work runs here. It's free, needs no account and sends nothing to the cloud.
+A local companion service for the RoughCut Premiere panel. Optional: the panel uses Premiere's own transcript first and only needs the engine for exact pause detection, Whisper when Premiere hasn't transcribed, the AI pass, and Podcast Mode's mic detection. UXP panels can't run binaries, but they can `fetch` localhost, so the heavy work runs here. It's free, needs no account and sends nothing to the cloud.
 
 - **Binds to `127.0.0.1:7317` only.** The panel sends a media **file path**, never the file itself.
 - **Mac only (Apple Silicon).** Transcription uses [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper), which runs on Metal.
@@ -27,6 +27,7 @@ The first `uv run` installs dependencies. The first transcription downloads the 
 | `GET /health` | | `{ok, version, model}` |
 | `POST /silences` | `{path, noise_db=-35, min_silence=0.5}` | `{duration, silences:[{start,end}]}` in seconds |
 | `POST /transcribe` | `{path, model?, language?}` | `{model, language, segments:[{start,end,text}], words:[{text,start,end,prob,filler,segment}]}` |
+| `POST /levels` | `{path, channel?, rate=10}` | `{rate, channel, duration, db:[...]}`: loudness per 1/rate s, for Podcast Mode's mic fallback |
 | `POST /edit` | `{units:[{id,start,end,text}], provider:"ollama"\|"claude", api_key?, instruction?, prefer_last_take}` | `{provider, model, removals:[{start,end,ids,reason,note}], keep_ids}` |
 
 - Results are cached by path, file size, mtime and parameters, so a re-run is instant.

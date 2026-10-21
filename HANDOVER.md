@@ -41,7 +41,9 @@ src/
     ReviewPanel.tsx            Clean-up review: transcript, pause/filler cuts, toggle, marked cut
   reviewModel.ts               Pure: source→sequence time mapping, cut building/merging, summary
   reviewHost.ts                Premiere reads for review: A1 clips + media paths, set playhead
-  reviewDemo.ts                Canned engine output for the browser demo
+  reviewDemo.ts                Canned transcript, AI result and mic levels for the browser demo
+  podcastSpeakers.ts           Pure: mic loudness → active speaker turns (Podcast Mode fallback)
+  panels/PodcastMode.tsx       Podcast Mode block in Auto-Cut: Premiere labels first, mic fallback
   xmlCut.ts                    Pure: remove time ranges from a Premiere FCP XML export
   xmlCutHost.ts                Premiere glue: export XML → xmlCut → import → open new sequence
   engineClient.ts              Typed fetch client for the local engine (127.0.0.1:7317)
@@ -106,9 +108,14 @@ Panel (UXP) ── engineClient.ts ──fetch──▶ roughcut-engine (FastAPI
 ### Clean-up review flow
 
 ```
-ReviewPanel "Transcribe & find pauses"
+ReviewPanel "Find pauses & fillers"
   └─ reviewHost.getPrimaryAudioClips()   A1 clips: media path, sequence start/end, source in-point
-  └─ per unique media file: engine /transcribe + /silences (min 0.3s, filtered locally)
+  └─ words: Premiere's own transcript first (reviewHost.getPremiereTranscriptWords)
+  │    sequence transcript, else each A1 clip's transcript placed on the timeline
+  │    (transcriptParse.transcriptWordsFromJson keeps word timings; um/uh flagged as fillers)
+  │    fallback only if there's none: engine /transcribe (Whisper)
+  └─ pauses: engine /silences when the engine is running (measured in the audio),
+  │    otherwise gaps between words (reviewModel.gapSilences)
   └─ reviewModel.wordsForClip / mapToSequence   source time → sequence time, per clip
   └─ reviewModel.buildCuts(words, silences, settings)
        ├─ silences ≥ min pause, shrunk by "breathing room" padding
@@ -119,6 +126,26 @@ ReviewPanel "Transcribe & find pauses"
   └─ "Remove N cuts → new sequence" → xmlCutHost.removeCutsViaXml   (ROADMAP Phase 3b)
   └─ "Or mark them only" → cutsToDecisions → premiere.createRoughCut (markers on a clone)
 ```
+
+- The review now works **without the engine** when Premiere has transcribed the sequence; the note under the button says which transcript and pause source were used.
+
+### Podcast Mode (ROADMAP Phase 5)
+
+Who's talking, for the multicam autopilot (`AutoCutPanel` → `PodcastMode`):
+
+1. **Premiere's speaker labels** (Speaker 1 / Speaker 2 from the Text panel) when the analysed transcript has at least two. The autopilot cuts on them through the existing Speaker mapping.
+2. **Mic fallback** when there are no labels, or the editor clicks "Use mic tracks instead":
+```
+"Find mic tracks"   reviewHost.getAudioTracks() → audio tracks with file clips
+  rows: Mic N = track + channel (Mix / Ch 1-4) → camera. One stereo track defaults to Ch 1 / Ch 2.
+"Detect speakers"   engine POST /levels per file+channel (dB, 10 per second, cached)
+  └─ podcastSpeakers.placeEnvelope   each mic's clips placed on the sequence timeline
+  └─ detectSpeakers   active = ≥12 dB over the mic's own floor (5th percentile) AND within 6 dB of
+  │                    the loudest mic (rejects bleed, keeps crosstalk); gaps ≤0.6s bridged, turns <0.4s dropped
+  └─ turnsToSegments  → TranscriptSegment[] labelled "Mic 1 (A1)" + mappings to the chosen cameras
+  └─ getAutopilotOptions(micSegments, micMappings, …)   overlapping turns → wide shot, as before
+```
+- **Not yet verified in Premiere:** reading every audio track's clips, and whether a recording's mics are on separate tracks or on channels of one file. Thresholds are tuned on synthetic audio only.
 
 ### AI pass and Chat Edit (ROADMAP Phase 4)
 
@@ -497,7 +524,7 @@ If any probe fails, the corresponding feature silently degrades (but the flat cl
 ## Known issues / next steps
 
 - **Speaker mapping is manual** — the user must assign Host/Guest → Camera 1/2. Auto-detection from clip names would be a quality-of-life improvement.
-- **No diarization in most projects** — Premiere's "Transcribe Sequence" rarely outputs speaker IDs; the rotation fallback fires for most real projects.
+- **No speaker labels** — when Premiere's transcript has none, Podcast Mode's mic fallback replaces the old camera rotation (rotation still happens if neither is used).
 - **Eval harness is offline only** — `src/eval/` scores hook options against FCP XML reference edits, but there is no CI gate on eval quality yet.
 - **Multicam clips not supported** — `detectSources` will error if the sequence contains a Multicam Source Clip rather than individual camera tracks on separate video tracks.
 - **Phase 0 spike results** — Run the API probes in UDT to confirm scale keyframing, audio access, and MOGRT work before declaring Phases 2–4 production-ready.

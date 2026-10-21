@@ -39,3 +39,15 @@ export function demoAiRemovals(units: { id: number; start: number; end: number; 
     .filter((u) => u.text.startsWith('Let me show you how to, no wait'))
     .map((u) => ({ start: u.start, end: u.end, reason: 'retake' as const, note: 'abandoned first attempt; kept the next line' }))
 }
+
+/** Demo mic tracks for Podcast Mode: host and guest trading turns, each faintly in the other's mic. */
+export function demoMicEnvelopes(seconds: number): number[][] {
+  const turns = [[0, 8, 0], [8.5, 15, 1], [15, 17, 0], [17.2, 30, 1], [30.5, 41, 0], [41, 44, 1], [44.2, 60, 0]]
+  return [0, 1].map((mic) => Array.from({ length: Math.ceil(seconds * 10) }, (_, i) => {
+    const t = (i % 600) / 10
+    const turn = turns.find(([a, b]) => t >= a && t < b)
+    const breath = Math.sin(i * 1.7) * 3
+    if (!turn) return -62 + breath
+    return turn[2] === mic ? -20 + breath : -36 + breath
+  }))
+}

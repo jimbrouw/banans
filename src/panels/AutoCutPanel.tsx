@@ -8,6 +8,8 @@ import type { AutopilotOption } from '../autopilot'
 import type { CutPoint, DetectedSources } from '../cutEngine'
 import type { SpeakerMapping, TranscriptSegment } from '../types'
 import { SpikePanel } from './SpikePanel'
+import { PodcastMode } from './PodcastMode'
+import type { MicSpeakers } from './PodcastMode'
 
 interface Props {
   sequenceId: string
@@ -21,6 +23,7 @@ export function AutoCutPanel({ sequenceId, segments, mappings }: Props) {
   const [autoCutError, setAutoCutError] = useState('')
   const [autoCutResult, setAutoCutResult] = useState('')
   const [selectedAutopilotOptionId, setSelectedAutopilotOptionId] = useState<string | null>(null)
+  const [micSpeakers, setMicSpeakers] = useState<MicSpeakers | null>(null) // Podcast Mode fallback: speakers from mic levels
 
   const detectCameras = async () => {
     try {
@@ -65,10 +68,11 @@ export function AutoCutPanel({ sequenceId, segments, mappings }: Props) {
   }
 
   const autopilotOptions = useMemo(() => {
-    if (!segments.length || !autoCutDet) return []
+    const speech = micSpeakers ?? { segments, mappings }
+    if (!speech.segments.length || !autoCutDet) return []
     const sources = autoCutDet.sources.map(s => ({ camera: s.camera, name: s.name }))
-    return getAutopilotOptions(segments, mappings, sources, autoCutDet.totalFrames, autoCutDet.frameRate)
-  }, [segments, mappings, autoCutDet])
+    return getAutopilotOptions(speech.segments, speech.mappings, sources, autoCutDet.totalFrames, autoCutDet.frameRate)
+  }, [segments, mappings, micSpeakers, autoCutDet])
 
   const selectedOption = autopilotOptions.find(o => o.id === selectedAutopilotOptionId) || autopilotOptions[0]
 
@@ -87,6 +91,7 @@ export function AutoCutPanel({ sequenceId, segments, mappings }: Props) {
         {autoCutDet.sources.length} cameras detected · {autoCutDet.frameRate} fps · {autoCutDet.totalFrames} frames · target V{autoCutDet.targetTrackIndex + 1}
         {autoCutDet.sources.map(s => <div key={s.camera} style={{ paddingLeft: 8 }}>C{s.camera}: {s.name} (V{s.vIndex + 1}, offset {s.clipStartFrame}f)</div>)}
       </div>}
+      {autoCutDet && <PodcastMode det={autoCutDet} transcript={segments} active={!!micSpeakers} onChange={setMicSpeakers} />}
 
       {autopilotOptions.length > 0 && (
         <div className="autopilot-section">

@@ -333,3 +333,13 @@ select:hover { border-color: #465153; }
 .review-word.removable.cut { color: var(--amber); text-decoration: line-through; background-color: rgba(237, 122, 19, .12); }
 .review-word.removable.kept { color: var(--text); text-decoration: underline dotted var(--dim); }
 .review-pause.ai.cut { color: var(--cyan); border-color: rgba(82, 203, 199, .45); background-color: rgba(82, 203, 199, .08); }
+
+/* Podcast Mode */
+.podcast-mode { margin: 10px 0; padding: 12px; border: 1px solid var(--line-soft); border-radius: 8px; background-color: var(--surface); }
+.podcast-mode .hint { display: block; margin: 0 0 8px; line-height: 1.45; }
+.mic-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.mic-row { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.mic-row strong { width: 38px; flex: none; }
+.mic-row select { flex: 1; min-width: 0; }
+.mic-remove { color: var(--dim); cursor: pointer; display: flex; }
+.mic-actions { display: flex; justify-content: space-between; align-items: center; }
