@@ -4,6 +4,7 @@ import { Press } from '../ui'
 import { errorMessage, formatTime, openExternal } from '../uiHelpers'
 import { premiere } from '../premiereAdapter'
 import { findColdOpens } from '../coldOpenFinder'
+import { logged } from '../runLog'
 import type { ColdOpenOption } from '../coldOpenFinder'
 import type { TranscriptSegment } from '../types'
 
@@ -20,7 +21,7 @@ export function ColdOpenPanel({ sequenceId, segments }: { sequenceId: string; se
     if (!segments.length) { setColdOpenError('Analyze a transcript first so there is something to scan.'); setColdOpenStatus('error'); return }
     try {
       setColdOpenError(''); setColdOpenResult(''); setColdOpenStatus('finding')
-      const options = await findColdOpens(segments, apiKey)
+      const options = await logged('Cold Open find', { segments: segments.length }, () => findColdOpens(segments, apiKey), (o) => `${o.length} options`)
       setColdOpens(options)
       setColdOpenStatus('done')
     } catch (reason) {
@@ -34,7 +35,8 @@ export function ColdOpenPanel({ sequenceId, segments }: { sequenceId: string; se
       setColdOpenError(''); setColdOpenResult(''); setColdOpenStatus('assembling')
       // The adapter handles everything: lifts the window with synced audio, then
       // detects cameras on the subsequence and applies the Energy Reset shot plan.
-      const name = await premiere.assembleColdOpenClip(sequenceId, option.startSeconds, option.endSeconds, option.shots)
+      const name = await logged('Cold Open', { start: option.startSeconds, end: option.endSeconds, shots: option.shots.length, archetype: option.archetype },
+        () => premiere.assembleColdOpenClip(sequenceId, option.startSeconds, option.endSeconds, option.shots), (n) => n)
       setColdOpenResult(name)
       setColdOpenStatus('done')
     } catch (reason) {

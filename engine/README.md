@@ -7,8 +7,17 @@ A local companion service for the RoughCut Premiere panel. Optional: the panel u
 
 ## Run
 
+**Normal use: start on demand.** Run this once:
+
 ```bash
-cd engine
+./install.sh
+```
+
+macOS then listens on 127.0.0.1:7317 without running anything. When the RoughCut panel connects, macOS starts the engine (about 0.3 s); after 10 minutes with no requests it quits. Nothing runs while you're not using Premiere. Undo with `./uninstall.sh`. Engine output: `~/Library/Logs/RoughCut/engine.log`.
+
+**Development: run by hand.** This binds the port itself and stays up:
+
+```bash
 uv run roughcut-engine
 ```
 
@@ -18,6 +27,7 @@ The first `uv run` installs dependencies. The first transcription downloads the 
 |---|---|---|
 | `RC_ENGINE_PORT` | `7317` | Port. If you change it, change `ENGINE_URL` in `src/engineClient.ts` and the manifest domain too. |
 | `RC_WHISPER_MODEL` | `mlx-community/whisper-large-v3-turbo` | Any mlx-community whisper repo. `whisper-tiny` is useful for quick tests. |
+| `RC_ENGINE_IDLE` | `600` | Seconds without requests before an on-demand engine quits. |
 | `RC_ENGINE_CACHE` | `~/Library/Caches/roughcut-engine` | Result cache and extracted WAVs. |
 
 ## API

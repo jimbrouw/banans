@@ -3,6 +3,7 @@
 // heavy lifting (transcription, silence detection) on the user's machine.
 
 export const ENGINE_URL = 'http://127.0.0.1:7317'
+export const ENGINE_OFF_MESSAGE = 'The local engine isn’t set up. Run engine/install.sh once and it starts by itself when RoughCut needs it.'
 
 export interface EngineHealth { ok: boolean; version: string; model: string }
 export interface SilenceRange { start: number; end: number }
@@ -30,9 +31,12 @@ async function call<T>(path: string, body?: unknown, timeoutMs = 3000): Promise<
   }
 }
 
-/** Resolves to null when the engine isn't running — callers degrade to Premiere's transcript. */
+/**
+ * Resolves to null when the engine isn't running — callers degrade to Premiere's transcript.
+ * Installed on demand (engine/install.sh), this first request is what starts it, so allow a cold start.
+ */
 export async function engineHealth(): Promise<EngineHealth | null> {
-  try { return await call<EngineHealth>('/health') } catch { return null }
+  try { return await call<EngineHealth>('/health', undefined, 5000) } catch { return null }
 }
 
 export const detectSilences = (path: string, opts: { noise_db?: number; min_silence?: number } = {}) =>

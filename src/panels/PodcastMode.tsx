@@ -2,13 +2,14 @@ import { useState } from 'react'
 import { AlertTriangle, Mic, Plus, X } from 'lucide-react'
 import { Press } from '../ui'
 import { errorMessage } from '../uiHelpers'
-import { engineHealth, micLevels } from '../engineClient'
+import { ENGINE_OFF_MESSAGE, engineHealth, micLevels } from '../engineClient'
 import type { DetectedSources } from '../cutEngine'
 import { detectSpeakers, hasSpeakerLabels, placeEnvelope, talkShare, turnsToSegments } from '../podcastSpeakers'
 import type { Envelope } from '../podcastSpeakers'
 import type { SourceClip } from '../reviewModel'
 import { getAudioTracks } from '../reviewHost'
 import { demoMicEnvelopes } from '../reviewDemo'
+import { writeLog } from '../runLog'
 import type { SpeakerMapping, TranscriptSegment } from '../types'
 
 const RATE = 10
@@ -58,7 +59,7 @@ export function PodcastMode({ det, transcript, active, onChange }: { det: Detect
       if (demo) {
         envelopes = demoMicEnvelopes(duration).slice(0, rows.length)
       } else {
-        if (!await engineHealth()) throw new Error('Mic detection needs the local engine. In Terminal: cd engine && uv run roughcut-engine')
+        if (!await engineHealth()) throw new Error(`Mic detection needs the local engine. ${ENGINE_OFF_MESSAGE}`)
         envelopes = []
         for (const row of rows) {
           const clips = tracks.find((t) => t.index === row.track)?.clips ?? []
@@ -73,9 +74,12 @@ export function PodcastMode({ det, transcript, active, onChange }: { det: Detect
       const segments = turnsToSegments(labels, turns)
       if (!segments.length) throw new Error('No speech found on those mic tracks. Check the tracks and channels.')
       onChange({ segments, mappings: rows.map((r, i) => ({ speaker: labels[i], camera: cameraName(r.camera) })) })
-      setSummary(talkShare(turns).map((share, i) => `${labels[i]} ${Math.round(share * 100)}% · ${turns[i].length} turns`).join('  ·  '))
+      const text = talkShare(turns).map((share, i) => `${labels[i]} ${Math.round(share * 100)}% · ${turns[i].length} turns`).join('  ·  ')
+      setSummary(text)
+      writeLog({ at: new Date(), status: 'OK', action: 'Detect speakers', result: text, details: { mics: rows.map((r, i) => `${rowLabel(r, i)}→cam${r.camera}`).join(', ') } })
     } catch (reason) {
       setError(errorMessage(reason))
+      writeLog({ at: new Date(), status: 'FAIL', action: 'Detect speakers', details: { error: errorMessage(reason) } })
     } finally {
       setBusy(false)
     }

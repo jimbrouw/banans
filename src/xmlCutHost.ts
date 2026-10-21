@@ -5,6 +5,8 @@
 import type { premierepro } from '@adobe/premierepro'
 import { getRuntimeRequire } from './hostRuntime'
 import { applyCutsToXml } from './xmlCut'
+import { nextSequenceName } from './sequenceNames'
+import { fileInRoughCutBin } from './projectBin'
 import type { CutRangeSeconds, XmlCutStats } from './xmlCut'
 
 interface UxpEntry { name: string; nativePath: string; read(): Promise<string>; write(data: string): Promise<unknown> }
@@ -16,7 +18,7 @@ interface UxpFolder {
 type Uxp = { storage: { localFileSystem: { getTemporaryFolder(): Promise<UxpFolder> } } }
 
 /** Returns null outside Premiere (browser demo). */
-export async function removeCutsViaXml(cuts: CutRangeSeconds[]): Promise<{ name: string; stats: XmlCutStats } | null> {
+export async function removeCutsViaXml(cuts: CutRangeSeconds[], detail: string): Promise<{ name: string; stats: XmlCutStats } | null> {
   const runtimeRequire = getRuntimeRequire()
   if (!runtimeRequire) return null
   const ppro = runtimeRequire('premierepro') as premierepro
@@ -34,7 +36,7 @@ export async function removeCutsViaXml(cuts: CutRangeSeconds[]): Promise<{ name:
   }
   const exported = await (await tmp.getEntry(exportName)).read()
 
-  const name = `${sequence.name} - RoughCut`
+  const name = nextSequenceName(sequence.name, 'Clean-up', detail, (await project.getSequences()).map((s) => s.name))
   const { xml, stats } = applyCutsToXml(exported, cuts, name)
 
   const outFile = await tmp.createFile(`roughcut-cut-${stamp}.xml`, { overwrite: true })
@@ -43,6 +45,7 @@ export async function removeCutsViaXml(cuts: CutRangeSeconds[]): Promise<{ name:
   if (!await project.importFiles([outFile.nativePath], true)) throw new Error(`Premiere could not import the cut XML (${outFile.nativePath}).`)
   const created = (await project.getSequences()).find((s) => !before.has(s.guid.toString()))
   if (!created) throw new Error(`Imported the cut XML but no new sequence appeared. The file is at ${outFile.nativePath}.`)
+  await fileInRoughCutBin(ppro, project, await created.getProjectItem())
   await project.setActiveSequence(created)
   return { name: created.name, stats }
 }

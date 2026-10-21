@@ -4,6 +4,7 @@ import { analyseTranscript } from './analyse'
 import { sequence as demoSequence } from './mockPremiere'
 import { isPremiereHost, premiere } from './premiereAdapter'
 import { errorMessage } from './uiHelpers'
+import { logged, logPath, writeLog } from './runLog'
 import type { AnalysisSettings, EditDecision, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
 import { SequencePanel, SpeakerMappingPanel } from './panels/SequencePanel'
 import { AnalysisPanel } from './panels/AnalysisPanel'
@@ -27,7 +28,10 @@ export default function App() {
 
   useEffect(() => {
     premiere.getActiveSequence()
-      .then((activeSequence) => { setSequence(activeSequence); setStatus('ready') })
+      .then(async (activeSequence) => {
+        setSequence(activeSequence); setStatus('ready')
+        writeLog({ at: new Date(), status: 'INFO', action: 'Panel opened', details: { sequence: activeSequence.name, host: isPremiereHost() ? 'premiere' : 'browser', log: await logPath() ?? 'console' } })
+      })
       .catch((reason: unknown) => { setError(errorMessage(reason)); setStatus('error') })
   }, [])
 
@@ -46,7 +50,9 @@ export default function App() {
     try {
       setError('')
       setStatus('analysing')
-      const transcript = loadFromFile ? await premiere.importTranscriptFile() : await premiere.getTranscript(sequence.id)
+      const transcript = await logged('Analyse', { sequence: sequence.name, from: loadFromFile ? 'file' : 'premiere' },
+        () => loadFromFile ? premiere.importTranscriptFile() : premiere.getTranscript(sequence.id),
+        (t) => `${t.length} segments · ${new Set(t.map((x) => x.speaker)).size} speakers`)
       if (!transcript.length) { setStatus(decisions.length ? 'results' : 'ready'); return }
       await analyseSegments(transcript)
     } catch (reason) {
@@ -59,7 +65,7 @@ export default function App() {
     try {
       setError('')
       setStatus('creating')
-      await premiere.createRoughCut(sequence.id, selected, mappings)
+      await logged('Review Markers', { source: sequence.name, markers: selected.length }, () => premiere.createRoughCut(sequence.id, selected, mappings), (n) => n)
       setStatus('created')
     } catch (reason) {
       setError(errorMessage(reason))

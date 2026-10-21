@@ -48,6 +48,9 @@ src/
   xmlCutHost.ts                Premiere glue: export XML → xmlCut → import → open new sequence
   engineClient.ts              Typed fetch client for the local engine (127.0.0.1:7317)
   ui.tsx                       Shared components: Press, Toggle
+  sequenceNames.ts             Pure: numbered names for generated sequences ("Seq — Auto Cut 03 (…)")
+  projectBin.ts                Files generated sequences into the "RoughCut" bin
+  runLog.ts                    Run log: one line per action, in the plugin's data folder
   uiHelpers.ts                 markerMeta, platform maps, formatTime, openExternal
   App.css / index.css          Styles
   types.ts                     Shared interfaces
@@ -89,6 +92,17 @@ npm run build      # Production bundle → dist/
 
 ---
 
+## Generated sequences: names, bin, run log
+
+- **Names:** `<source> — <action> <NN> (<details>)`, e.g. `Sequence 01 — Auto Cut 03 (Balanced · 41 cuts · mics)`.
+  The run number counts up per source + action (`sequenceNames.nextSequenceName` reads the project's sequence names).
+  Running on a generated sequence counts against the original (`sourceBaseName` strips current and legacy suffixes).
+  Actions: Auto Cut, Clean-up, Clean-up Markers, Review Markers, Cold Open, Social Cut.
+- **Bin:** every generated sequence is moved into a `RoughCut` bin at the project root (created on first use, best-effort).
+- **Run log:** `runLog.logged(action, details, fn)` wraps each action and appends one line (OK/FAIL, duration, result, details, error) to
+  `roughcut.log` in the plugin's UXP data folder: `~/Library/Application Support/Adobe/UXP/PluginsStorage/PPRO/<version>/Developer/com.roughcut.podcast-assistant.dev/PluginData/roughcut.log`
+  (the "Panel opened" line records the exact path). API spike results are logged per probe. In the browser demo, lines go to the console.
+
 ## Local engine (`engine/`)
 
 UXP panels can't spawn processes, so anything that needs ffmpeg or an ML model runs in a separate local Python service the panel calls over `http://127.0.0.1:7317`.
@@ -99,7 +113,9 @@ Panel (UXP) ── engineClient.ts ──fetch──▶ roughcut-engine (FastAPI
                                             └─ POST /transcribe mlx-whisper, word timestamps, fillers kept
 ```
 
-- Start it: `cd engine && uv run roughcut-engine`. The header shows **Engine** (green) or **Engine off**.
+- **On demand (normal):** run `engine/install.sh` once. macOS then holds 127.0.0.1:7317 (socket activation, no process) and starts the engine when the panel connects; it quits after 10 idle minutes (`RC_ENGINE_IDLE`). Undo with `engine/uninstall.sh`. Engine output goes to `~/Library/Logs/RoughCut/engine.log`.
+- **By hand (development):** `cd engine && uv run roughcut-engine` binds the port itself and stays up.
+- The header shows **Engine** (green) or **Engine off**; its 10-second health poll is what wakes the engine, so it stays up while the panel is open.
 - The panel passes the clip's media **path** (Probe F checks we can read it); the engine reads the file directly.
 - `engineHealth()` returns `null` when the engine is down, and every feature must keep working on Premiere's own transcript in that case.
 - Manifest allows `http://127.0.0.1:7317` (needs UDT Unload → Load). **Not yet verified in UXP**: whether UXP's network permission accepts plain http to localhost.

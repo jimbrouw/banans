@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { AlertTriangle, Check, MessageSquare, Pause, Scissors, Sparkles, Wand2 } from 'lucide-react'
 import { Press, Toggle } from '../ui'
 import { errorMessage, formatTime, openExternal } from '../uiHelpers'
-import { aiEdit, detectSilences, engineHealth, transcribeMedia } from '../engineClient'
+import { aiEdit, detectSilences, ENGINE_OFF_MESSAGE, engineHealth, transcribeMedia } from '../engineClient'
 import type { AiProvider, SilenceRange } from '../engineClient'
 import { isPremiereHost, premiere } from '../premiereAdapter'
 import { buildCuts, cutsToDecisions, defaultReviewSettings, gapSilences, groupLines, mapToSequence, speechUnits, summarise, wordsForClip } from '../reviewModel'
@@ -10,6 +10,7 @@ import type { AiRemoval, ReviewCut, ReviewSettings, ReviewWord } from '../review
 import { getPremiereTranscriptWords, getPrimaryAudioClips, setPlayhead } from '../reviewHost'
 import { demoAiRemovals, demoClips, demoSilences, demoWords } from '../reviewDemo'
 import { removeCutsViaXml } from '../xmlCutHost'
+import { logged, writeLog } from '../runLog'
 
 type Status = 'idle' | 'loading' | 'ready' | 'thinking' | 'creating' | 'cutting' | 'created' | 'error'
 
@@ -43,6 +44,7 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
   const lines = useMemo(() => groupLines(words), [words])
   const units = useMemo(() => speechUnits(words), [words])
   const summary = summarise(cuts)
+  const runDetail = `${summary.count} cuts · ${summary.seconds.toFixed(1)}s${aiRemovals.length ? ' · AI' : ''}`
   const patch = (p: Partial<ReviewSettings>) => setSettings((s) => ({ ...s, ...p }))
   const toggleCut = (c: ReviewCut) => setKept((prev) => { const next = new Set(prev); if (next.has(cutKey(c))) next.delete(cutKey(c)); else next.add(cutKey(c)); return next })
   const cutAt = (w: ReviewWord) => cuts.find((c) => w.start >= c.start - 0.01 && w.end <= c.end + 0.01)
@@ -65,7 +67,7 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
       const transcriptSource = nextWords.length ? 'Premiere transcript' : 'Whisper (local engine)'
       const engineUp = !!await engineHealth()
       if (!nextWords.length && !engineUp) {
-        throw new Error('No Premiere transcript on this sequence or its A1 clips. Transcribe it in Premiere’s Text panel, or start the local engine (cd engine && uv run roughcut-engine) to transcribe with Whisper.')
+        throw new Error(`No Premiere transcript on this sequence or its A1 clips. Transcribe it in Premiere’s Text panel, or use Whisper: ${ENGINE_OFF_MESSAGE}`)
       }
 
       // 2. Pauses: measured in the audio when the engine is running, otherwise gaps between words.
@@ -91,8 +93,10 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
       setWords(nextWords); setSilences(nextSilences)
       setSourceNote(`${transcriptSource} · pauses from ${engineUp ? 'the audio' : 'gaps between words (start the engine for exact pauses)'}`)
       setStatus('ready')
+      writeLog({ at: new Date(), status: 'OK', action: 'Clean-up scan', result: `${nextWords.length} words · ${nextSilences.length} pauses`, details: { transcript: transcriptSource, pauses: engineUp ? 'audio' : 'word gaps', clips: clips.length } })
     } catch (reason) {
       setError(errorMessage(reason)); setStatus('error')
+      writeLog({ at: new Date(), status: 'FAIL', action: 'Clean-up scan', details: { error: errorMessage(reason) } })
     }
   }
 
@@ -106,9 +110,11 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
           await wait(700)
           setAiRemovals(demoAiRemovals(units)); setAiNote('Demo: found 1 retake.'); setStatus('ready'); return
         }
-        throw new Error('The local engine isn\'t running. In Terminal: cd engine && uv run roughcut-engine')
+        throw new Error(ENGINE_OFF_MESSAGE)
       }
-      const res = await aiEdit(units, { provider, apiKey, instruction, preferLastTake })
+      const res = await logged(instruction ? 'Chat Edit' : 'AI pass', { provider, lines: units.length, instruction, lastTake: preferLastTake },
+        () => aiEdit(units, { provider, apiKey, instruction, preferLastTake }),
+        (r) => `${r.model}: ${r.removals.length} cuts · ${r.keep_ids.length} kept`)
       const found: AiRemoval[] = res.removals.map(({ start, end, reason, note }) => ({ start, end, reason, note }))
       if (!instruction) {
         setAiRemovals(found)
@@ -133,7 +139,7 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
   const createMarkedCut = async () => {
     try {
       setError(''); setStatus('creating')
-      const name = await premiere.createRoughCut(sequenceId, cutsToDecisions(cuts), [])
+      const name = await logged('Clean-up Markers', { cuts: summary.count }, () => premiere.createRoughCut(sequenceId, cutsToDecisions(cuts), [], { action: 'Clean-up Markers', detail: runDetail }), (n) => n)
       setResult(`Created "${name}" with ${summary.count} cut markers.`)
       setStatus('created')
     } catch (reason) {
@@ -144,8 +150,10 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
   const removeCuts = async () => {
     try {
       setError(''); setStatus('cutting')
-      const done = await removeCutsViaXml(cuts.filter((c) => c.active))
-      if (!done) { await wait(600); setResult(`Demo: would create "… - RoughCut" with ${summary.count} cuts (${summary.seconds.toFixed(1)}s) removed.`) }
+      const done = await logged('Clean-up', { cuts: summary.count, seconds: summary.seconds, ai: aiRemovals.length },
+        () => removeCutsViaXml(cuts.filter((c) => c.active), runDetail),
+        (d) => d ? `${d.name} · ${(d.stats.removedFrames / d.stats.fps).toFixed(1)}s removed · ${d.stats.transitionsDropped} transitions dropped · ${d.stats.unplaced.length} unplaced` : 'demo')
+      if (!done) { await wait(600); setResult(`Demo: would create "Episode — Clean-up 01 (${runDetail})".`) }
       else setResult(`Created "${done.name}": ${(done.stats.removedFrames / done.stats.fps).toFixed(1)}s removed across ${summary.count} cuts${done.stats.transitionsDropped ? `, ${done.stats.transitionsDropped} transitions dropped` : ''}${done.stats.unplaced.length ? `. ${done.stats.unplaced.length} clips couldn't be placed and were left unedited: check them` : ''}.`)
       setStatus('created')
     } catch (reason) {

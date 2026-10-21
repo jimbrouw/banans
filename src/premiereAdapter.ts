@@ -25,6 +25,9 @@ import type { CameraSource, CutInterval, CutPoint, DetectedSources, TimelineSegm
 import { shotsToEnergyResetCuts } from './coldOpenAssembler'
 import type { ColdOpenShot } from './coldOpenFinder'
 import type { EditDecision, PremiereAdapter, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
+import { nextSequenceName, timeRange } from './sequenceNames'
+import type { RunAction } from './sequenceNames'
+import { fileInRoughCutBin } from './projectBin'
 
 export { normalizeTranscriptJson }
 
@@ -158,7 +161,17 @@ class UxpPremiereAdapter implements PremiereAdapter {
     }
   }
 
-  async createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[]): Promise<string> {
+  /** Give a generated sequence its numbered name and file it in the RoughCut bin. */
+  private async nameGenerated(project: Project, item: ProjectItem, sourceName: string, action: RunAction, detail: string): Promise<string> {
+    const name = nextSequenceName(sourceName, action, detail, (await project.getSequences()).map((s) => s.name))
+    if (!this.tx(project, (c) => c.addAction(item.createSetNameAction(name)), `Name ${action} sequence`)) {
+      throw new Error('Premiere created the sequence but could not rename it.')
+    }
+    await fileInRoughCutBin(this.ppro, project, item)
+    return name
+  }
+
+  async createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[], run?: { action: RunAction; detail: string }): Promise<string> {
     void mappings
     void sequenceId
     const { project, sequence } = await this.context()
@@ -167,10 +180,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     if (!cloned) throw new Error('Premiere could not clone the active sequence.')
     const roughCut = (await project.getSequences()).find((item) => !existingIds.has(item.guid.toString()))
     if (!roughCut) throw new Error('Premiere cloned the sequence but did not return the new sequence.')
-    const name = `${sequence.name} - AI Rough Cut`
-    const projectItem = await roughCut.getProjectItem()
-    const named = this.tx(project, (compound) => compound.addAction(projectItem.createSetNameAction(name)), 'Name RoughCut sequence')
-    if (!named) throw new Error('Premiere cloned the sequence but could not rename it.')
+    const name = await this.nameGenerated(project, await roughCut.getProjectItem(), sequence.name, run?.action ?? 'Review Markers', run?.detail ?? `${decisions.length} markers`)
     await this.writeMarkers(project, roughCut, decisions, 'Add RoughCut markers')
     if (!await project.setActiveSequence(roughCut)) throw new Error('The rough cut was created, but Premiere could not open it.')
     return name
@@ -334,6 +344,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     cuts: CutPoint[],
     det: DetectedSources,
     endFrame: number,
+    detail = '',
   ): Promise<string> {
     let phase = 'init'
     try {
@@ -440,15 +451,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
 
       // Rename the clone.
       phase = 'rename clone'
-      const baseName = sequence.name.replace(/ - Auto Cut( \d+)?$/, '')
-      const cloneName = `${baseName} - Auto Cut`
-      const cloneItem = await cloneRef.getProjectItem()
-      const renameOk = this.tx(
-        project,
-        (c) => c.addAction(cloneItem.createSetNameAction(cloneName)),
-        'Rename auto-cut clone',
-      )
-      if (!renameOk) throw new Error('Premiere rejected the rename transaction.')
+      const cloneName = await this.nameGenerated(project, await cloneRef.getProjectItem(), sequence.name, 'Auto Cut', detail)
 
       // 7. Build the switched cut by camera-disable, keeping every angle on its
       //    own track. There is no programmatic razor, so for multi-segment cuts we
@@ -649,15 +652,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const clone = (await project.getSequences()).find(s => !beforeGuids.has(s.guid.toString()))
     if (!clone) throw new Error('Clone completed but new sequence not found.')
 
-    // 4. Rename clone
-    const baseName = sequence.name.replace(/ - Cold Open( \d+)?$/, '')
-    const cloneName = `${baseName} - Cold Open`
-    const cloneItem = await clone.getProjectItem()
-    this.tx(
-      project,
-      (c) => c.addAction(cloneItem.createSetNameAction(cloneName)),
-      'Rename cold open clone',
-    )
+    // 4. Name the clone and file it in the RoughCut bin
+    const cloneName = await this.nameGenerated(project, await clone.getProjectItem(), sequence.name, 'Social Cut', `${decisions.length} clips`)
 
     // 5. Clear target track on clone
     const editor = await this.ppro.SequenceEditor.getEditor(clone)
@@ -841,10 +837,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const sub = await sequence.createSubsequence(true)
     if (!sub) throw new Error('Premiere could not create the cold open subsequence.')
 
-    const baseName = sequence.name.replace(/ - Cold Open( \d+)?$/, '')
-    const name = `${baseName} - Cold Open`
-    const subItem = await sub.getProjectItem()
-    this.tx(project, (c) => c.addAction(subItem.createSetNameAction(name)), 'Rename cold open subsequence')
+    const name = await this.nameGenerated(project, await sub.getProjectItem(), sequence.name, 'Cold Open', timeRange(startSeconds, endSeconds))
 
     // Activate the subsequence so detection + cutting target it.
     const subId = sub.guid.toString()

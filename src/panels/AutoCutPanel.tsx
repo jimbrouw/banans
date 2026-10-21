@@ -10,6 +10,8 @@ import type { SpeakerMapping, TranscriptSegment } from '../types'
 import { SpikePanel } from './SpikePanel'
 import { PodcastMode } from './PodcastMode'
 import type { MicSpeakers } from './PodcastMode'
+import { hasSpeakerLabels } from '../podcastSpeakers'
+import { logged } from '../runLog'
 
 interface Props {
   sequenceId: string
@@ -29,7 +31,7 @@ export function AutoCutPanel({ sequenceId, segments, mappings }: Props) {
     try {
       setAutoCutError('')
       setAutoCutStatus('detecting')
-      const det = await premiere.detectSources()
+      const det = await logged('Detect cameras', {}, () => premiere.detectSources(), (d) => `${d.sources.length} cameras · ${d.frameRate} fps · ${d.sources.map((s) => s.name).join(', ')}`)
       setAutoCutDet(det)
       setAutoCutStatus('detected')
     } catch (reason) {
@@ -38,11 +40,11 @@ export function AutoCutPanel({ sequenceId, segments, mappings }: Props) {
     }
   }
 
-  const applyCuts = async (cuts: CutPoint[], endFrame: number) => {
+  const applyCuts = async (cuts: CutPoint[], endFrame: number, detail: string) => {
     try {
       setAutoCutError('')
       setAutoCutStatus('applying')
-      const name = await premiere.applyCutMap(sequenceId, cuts, autoCutDet!, endFrame)
+      const name = await logged('Auto Cut', { cuts: cuts.length, detail }, () => premiere.applyCutMap(sequenceId, cuts, autoCutDet!, endFrame, detail), (n) => n)
       setAutoCutResult(name)
       setAutoCutStatus('done')
     } catch (reason) {
@@ -59,12 +61,12 @@ export function AutoCutPanel({ sequenceId, segments, mappings }: Props) {
       { frame: 300, camera: Math.min(3, autoCutDet.sources.length) },
       { frame: 450, camera: 1 },
     ]
-    return applyCuts(testCuts, Math.min(600, autoCutDet.totalFrames))
+    return applyCuts(testCuts, Math.min(600, autoCutDet.totalFrames), `test · ${testCuts.length} cuts`)
   }
 
   const applyAutopilot = (option: AutopilotOption) => {
     if (!autoCutDet) return
-    return applyCuts(option.cuts, autoCutDet.totalFrames)
+    return applyCuts(option.cuts, autoCutDet.totalFrames, `${option.profile.name.split(' ')[0]} · ${option.cuts.length} cuts · ${speakerSource}`)
   }
 
   const autopilotOptions = useMemo(() => {
@@ -74,6 +76,8 @@ export function AutoCutPanel({ sequenceId, segments, mappings }: Props) {
     return getAutopilotOptions(speech.segments, speech.mappings, sources, autoCutDet.totalFrames, autoCutDet.frameRate)
   }, [segments, mappings, micSpeakers, autoCutDet])
 
+  // Where the speaker turns came from, shown in the sequence name and the log.
+  const speakerSource = micSpeakers ? 'mics' : hasSpeakerLabels(segments) ? 'labels' : 'rotation'
   const selectedOption = autopilotOptions.find(o => o.id === selectedAutopilotOptionId) || autopilotOptions[0]
 
   return (

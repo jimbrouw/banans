@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Press } from '../ui'
 import { allProbes, probeLabels, runColdOpenSpike } from '../spike-coldopen'
+import { writeLog } from '../runLog'
 import type { Phase0Results, ProbeKey } from '../spike-coldopen'
 
 export function SpikePanel() {
@@ -10,7 +11,11 @@ export function SpikePanel() {
   const runSpike = async () => {
     try {
       setSpikeStatus('running'); setSpikeResults(null)
-      setSpikeResults(await runColdOpenSpike()); setSpikeStatus('done')
+      const results = await runColdOpenSpike()
+      setSpikeResults(results); setSpikeStatus('done')
+      for (const k of Object.keys(probeLabels) as ProbeKey[]) {
+        writeLog({ at: new Date(), status: results[k].ok ? 'OK' : 'FAIL', action: `Spike: ${probeLabels[k]}`, details: { detail: results[k].detail } })
+      }
     } catch (e) {
       setSpikeStatus('error')
       setSpikeResults(allProbes(false, String(e)))
