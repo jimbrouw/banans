@@ -42,6 +42,8 @@ src/
   reviewModel.ts               Pure: source→sequence time mapping, cut building/merging, summary
   reviewHost.ts                Premiere reads for review: A1 clips + media paths, set playhead
   reviewDemo.ts                Canned engine output for the browser demo
+  xmlCut.ts                    Pure: remove time ranges from a Premiere FCP XML export
+  xmlCutHost.ts                Premiere glue: export XML → xmlCut → import → open new sequence
   engineClient.ts              Typed fetch client for the local engine (127.0.0.1:7317)
   ui.tsx                       Shared components: Press, Toggle
   uiHelpers.ts                 markerMeta, platform maps, formatTime, openExternal
@@ -114,8 +116,29 @@ ReviewPanel "Transcribe & find pauses"
        ├─ filler words (if enabled) become cuts
        └─ cuts within 50 ms merge (e.g. "um" + following pause)
   └─ editor toggles cuts (pause chips / struck filler words); click a timestamp → playhead
-  └─ "Create Marked Review Cut" → cutsToDecisions → premiere.createRoughCut (markers on a clone)
+  └─ "Remove N cuts → new sequence" → xmlCutHost.removeCutsViaXml   (ROADMAP Phase 3b)
+  └─ "Or mark them only" → cutsToDecisions → premiere.createRoughCut (markers on a clone)
 ```
+
+### Removing cuts via FCP XML (`xmlCut.ts`)
+
+```
+ProjectConverter.exportAsFinalCutProXML(active sequence) → temp folder
+  └─ applyCutsToXml(xml, activeCuts, "<name> - RoughCut")
+       ├─ keepRanges: cuts (seconds) → kept frame ranges + new timeline positions
+       ├─ every clipitem/generatoritem on every track is split at the kept ranges and shifted
+       │    in/out and pproTicksIn/Out re-timed with it, so A/V stay in sync
+       ├─ start/end = -1 (clip edge inside a transition) resolved from the source length
+       ├─ transitions dropped; sequence markers shifted (ones inside a cut dropped)
+       ├─ each file id fully defined at its first use, bare references after
+       └─ <link>s point at the matching piece; links to cut-away pieces removed
+  └─ project.importFiles([cut.xml]) → find the new sequence → setActiveSequence
+```
+
+- It edits Premiere's **own** export, so tracks, effects, file references and generated media come through as they were.
+- **Limits:** transitions are dropped; keyframes inside a split clip aren't re-timed; nested sequences are left as they are.
+- `src/xmlCut.test.ts` covers the hand-built cases and, when the gitignored `EDIT V2 xlm for test .xml` is present, checks invariants on that real export: exact frames removed, every clip inside the new timeline, source length = timeline length, unique ids, files defined before use.
+- **Not yet verified in Premiere:** `exportAsFinalCutProXML` and `importFiles` from UXP (Probe E covers import), and how Premiere relinks media on import.
 
 - Toggled-off cuts are remembered by their start/end, so changing settings keeps your choices where the cut still exists.
 - In the browser demo, `getPrimaryAudioClips()` returns `null` and the panel uses `reviewDemo.ts`.

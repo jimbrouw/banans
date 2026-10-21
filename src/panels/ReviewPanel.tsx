@@ -9,8 +9,9 @@ import { buildCuts, cutsToDecisions, defaultReviewSettings, groupLines, mapToSeq
 import type { ReviewCut, ReviewSettings, ReviewWord } from '../reviewModel'
 import { getPrimaryAudioClips, setPlayhead } from '../reviewHost'
 import { demoClips, demoSilences, demoWords } from '../reviewDemo'
+import { removeCutsViaXml } from '../xmlCutHost'
 
-type Status = 'idle' | 'loading' | 'ready' | 'creating' | 'created' | 'error'
+type Status = 'idle' | 'loading' | 'ready' | 'creating' | 'cutting' | 'created' | 'error'
 
 const cutKey = (c: { start: number; end: number }) => `${c.start}-${c.end}`
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -75,12 +76,26 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
   const createMarkedCut = async () => {
     try {
       setError(''); setStatus('creating')
-      setResult(await premiere.createRoughCut(sequenceId, cutsToDecisions(cuts), []))
+      const name = await premiere.createRoughCut(sequenceId, cutsToDecisions(cuts), [])
+      setResult(`Created "${name}" with ${summary.count} cut markers.`)
       setStatus('created')
     } catch (reason) {
       setError(errorMessage(reason)); setStatus('error')
     }
   }
+
+  const removeCuts = async () => {
+    try {
+      setError(''); setStatus('cutting')
+      const done = await removeCutsViaXml(cuts.filter((c) => c.active))
+      if (!done) { await wait(600); setResult(`Demo: would create "… - RoughCut" with ${summary.count} cuts (${summary.seconds.toFixed(1)}s) removed.`) }
+      else setResult(`Created "${done.name}": ${(done.stats.removedFrames / done.stats.fps).toFixed(1)}s removed across ${summary.count} cuts${done.stats.transitionsDropped ? `, ${done.stats.transitionsDropped} transitions dropped` : ''}.`)
+      setStatus('created')
+    } catch (reason) {
+      setError(errorMessage(reason)); setStatus('error')
+    }
+  }
+  const busy = status === 'loading' || status === 'creating' || status === 'cutting'
 
   const jump = (seconds: number) => { setPlayhead(seconds).catch(() => { /* playhead is a convenience */ }) }
 
@@ -99,7 +114,7 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
       <div className="analysis-options">
         <label><div><strong>Cut filler words</strong><span>um, uh, er, hmm</span></div><Toggle checked={settings.cutFillers} onChange={() => patch({ cutFillers: !settings.cutFillers })} /></label>
       </div>
-      <Press className="primary" onClick={load} disabled={status === 'loading' || status === 'creating'}>
+      <Press className="primary" onClick={load} disabled={busy}>
         <Wand2 size={17} />{status === 'loading' ? step : words.length ? 'Re-run clean-up' : 'Transcribe & find pauses'}
       </Press>
       {error && <div className="error"><AlertTriangle size={16} />{error}</div>}
@@ -126,11 +141,14 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
                 <Pause size={11} />{row.cut.label}<span className="review-pause-state">{row.cut.active ? 'cut' : 'kept'}</span>
               </Press>)}
         </div>
-        <Press className="rough-cut" disabled={!summary.count || status === 'creating'} onClick={createMarkedCut}>
-          <Scissors size={18} />{status === 'creating' ? 'Writing markers…' : `Create Marked Review Cut (${summary.count})`}
+        <Press className="rough-cut" disabled={!summary.count || busy} onClick={removeCuts}>
+          <Scissors size={18} />{status === 'cutting' ? 'Cutting…' : `Remove ${summary.count} cuts → new sequence`}
         </Press>
-        <p className="hint review-note">Writes each cut as a marker on a copy of the sequence. Removing them automatically comes in Phase 3.</p>
-        {status === 'created' && <div className="success"><Check size={16} /> Created "{result}" with {summary.count} cut markers.</div>}
+        <Press className="text-button file-import" disabled={!summary.count || busy} onClick={createMarkedCut}>
+          {status === 'creating' ? 'Writing markers…' : 'Or mark them only (no cuts)'}
+        </Press>
+        <p className="hint review-note">Both build a new sequence. Your original stays untouched. Transitions in the sequence are dropped from the cut version.</p>
+        {status === 'created' && <div className="success"><Check size={16} /> {result}</div>}
       </>}
     </section>
   )
