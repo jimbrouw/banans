@@ -89,7 +89,7 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
       setError(''); setStatus('cutting')
       const done = await removeCutsViaXml(cuts.filter((c) => c.active))
       if (!done) { await wait(600); setResult(`Demo: would create "… - RoughCut" with ${summary.count} cuts (${summary.seconds.toFixed(1)}s) removed.`) }
-      else setResult(`Created "${done.name}": ${(done.stats.removedFrames / done.stats.fps).toFixed(1)}s removed across ${summary.count} cuts${done.stats.transitionsDropped ? `, ${done.stats.transitionsDropped} transitions dropped` : ''}.`)
+      else setResult(`Created "${done.name}": ${(done.stats.removedFrames / done.stats.fps).toFixed(1)}s removed across ${summary.count} cuts${done.stats.transitionsDropped ? `, ${done.stats.transitionsDropped} transitions dropped` : ''}${done.stats.unplaced.length ? `. ${done.stats.unplaced.length} clips couldn't be placed and were left unedited: check them` : ''}.`)
       setStatus('created')
     } catch (reason) {
       setError(errorMessage(reason)); setStatus('error')

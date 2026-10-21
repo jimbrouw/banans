@@ -126,6 +126,25 @@ describe('applyCutsToXml', () => {
     expect(s.removedFrames).toBe(0)
   })
 
+  it('places a clip with fades on both ends from the neighbouring transitions', () => {
+    const music = SAMPLE.replace('<audio>', `<audio>
+        <track>
+          <transitionitem><start>0</start><end>10</end><alignment>start-black</alignment></transitionitem>${clipV('clipitem-9', -1, -1, 500, 580, '<file id="file-1"/>')}
+          <transitionitem><start>70</start><end>80</end><alignment>end-black</alignment></transitionitem>
+        </track>`)
+    const { xml: out, stats: s } = applyCutsToXml(music, [{ start: 0.4, end: 0.8 }], 'x')
+    expect(s.unplaced).toEqual([])
+    const bed = items(seqOf(out), 'audio').filter((c) => String(c['@_id']).startsWith('clipitem-9'))
+    expect(bed.map((c) => [c.start, c.end, c.in, c.out])).toEqual([[0, 10, 500, 510], [10, 70, 520, 580]])
+  })
+
+  it('keeps a clip it cannot place instead of dropping it', () => {
+    const lost = SAMPLE.replace('<audio>', `<audio><track>${clipV('clipitem-8', -1, -1, 0, 10, '<file id="file-1"/>')}</track>`)
+    const { xml: out, stats: s } = applyCutsToXml(lost, [], 'x')
+    expect(s.unplaced).toEqual(['clipitem-8'])
+    expect(items(seqOf(out), 'audio').some((c) => c['@_id'] === 'clipitem-8')).toBe(true)
+  })
+
   it('rejects non-xmeml input', () => {
     expect(() => applyCutsToXml('<fcpxml/>', [], 'x')).toThrow('Not an FCP XML')
   })
@@ -167,6 +186,19 @@ describe.skipIf(!existsSync(REAL))('applyCutsToXml on a real Premiere export', (
         if (Object.keys(f).some((k) => !k.startsWith('@_'))) defined.add(f['@_id'] as string)
         expect(defined.has(f['@_id'] as string)).toBe(true)
       }
+    }
+  })
+
+  it('places every clip and loses none outside the cuts', () => {
+    expect(stats.unplaced).toEqual([])
+    const fps = 24000 / 1001
+    const cutFrames = cuts.map((c) => [Math.round(c.start * fps), Math.round(c.end * fps)])
+    const outIds = new Set(all.map((c) => String(c['@_id']).replace(/-\d+$/, '')))
+    const original = seqOf(xml)
+    for (const c of [...items(original, 'video'), ...items(original, 'audio')]) {
+      const s = c.start as number; const e = c.end as number
+      const insideCut = s >= 0 && e >= 0 && cutFrames.some(([a, b]) => s >= a && e <= b)
+      if (!insideCut) expect(outIds.has(c['@_id'] as string), `${c['@_id']} ${c.name}`).toBe(true)
     }
   })
 

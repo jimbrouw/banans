@@ -34,6 +34,8 @@ export interface XmlCutStats {
   clipPieces: number
   transitionsDropped: number
   markersDropped: number
+  /** Clips whose position couldn't be worked out; left in place unedited. */
+  unplaced: string[]
 }
 
 // ── preserveOrder node helpers ────────────────────────────────────────────────
@@ -82,22 +84,38 @@ export function keepRanges(cuts: CutRangeSeconds[], fps: number, totalFrames: nu
 
 // ── clip splitting ────────────────────────────────────────────────────────────
 
-function resolvedSpan(item: XNode): { start: number; end: number } {
+/** Where a clip's edge sits inside a transition: the fade's start/end for fades to black, the midpoint for a cross-fade. */
+function transitionCutPoint(t: XNode): number {
+  const align = getText(t, 'alignment')
+  if (align.startsWith('start')) return getNum(t, 'start')
+  if (align.startsWith('end')) return getNum(t, 'end')
+  return Math.floor((getNum(t, 'start') + getNum(t, 'end')) / 2)
+}
+
+/**
+ * Timeline span in sequence frames. An edge of -1 means "inside a transition";
+ * transitions are dropped, so derive it from the other edge plus the source
+ * length, or, when both edges are -1, from the neighbouring transition.
+ */
+function resolvedSpan(item: XNode, ratio: number, prevTransition?: XNode, nextTransition?: XNode): { start: number; end: number } {
   let start = getNum(item, 'start')
   let end = getNum(item, 'end')
-  const len = getNum(item, 'out') - getNum(item, 'in')
-  // -1 means "inside a transition"; transitions are dropped, so derive it from the source length.
+  const len = Math.round((getNum(item, 'out') - getNum(item, 'in')) / ratio)
+  if (start < 0 && end < 0) {
+    if (prevTransition) start = transitionCutPoint(prevTransition)
+    else if (nextTransition) end = transitionCutPoint(nextTransition)
+  }
   if (start < 0 && end >= 0) start = end - len
   if (end < 0 && start >= 0) end = start + len
   return { start, end }
 }
 
-function splitItem(item: XNode, keeps: Keep[], seqFps: number): { piece: XNode; keepIndex: number }[] {
-  const { start, end } = resolvedSpan(item)
-  if (!(end > start)) return []
+function splitItem(item: XNode, keeps: Keep[], seqFps: number, prevTransition?: XNode, nextTransition?: XNode): { piece: XNode; keepIndex: number }[] | null {
+  const ratio = rateOf(item).fps / seqFps || 1 // source frames per sequence frame
+  const { start, end } = resolvedSpan(item, ratio, prevTransition, nextTransition)
+  if (!(end > start) || start < 0) return null // couldn't place it
   const hasSource = child(item, 'in') !== undefined && child(item, 'out') !== undefined
   const srcIn = getNum(item, 'in')
-  const ratio = rateOf(item).fps / seqFps || 1 // source frames per sequence frame
   const ticksIn = Number(getText(item, 'pproTicksIn'))
   const ticksOut = Number(getText(item, 'pproTicksOut'))
   const srcLen = getNum(item, 'out') - srcIn
@@ -227,14 +245,26 @@ export function applyCutsToXml(xml: string, cuts: CutRangeSeconds[], newName: st
 
   let clipPieces = 0
   let transitionsDropped = 0
+  const unplaced: string[] = []
   const idToKeep = new Map<string, number>()
   for (const track of tracks) {
     const next: XNode[] = []
-    for (const node of kids(track)) {
+    const nodes = kids(track)
+    const elements = nodes.filter(isElement)
+    for (const node of nodes) {
       const tag = tagOf(node)
       if (tag === 'transitionitem') { transitionsDropped++; continue }
       if (!ITEM_TAGS.has(tag)) { next.push(node); continue }
-      for (const { piece, keepIndex } of splitItem(node, keeps, fps)) {
+      const at = elements.indexOf(node)
+      const neighbour = (n: XNode | undefined) => (n && tagOf(n) === 'transitionitem' ? n : undefined)
+      const pieces = splitItem(node, keeps, fps, neighbour(elements[at - 1]), neighbour(elements[at + 1]))
+      if (!pieces) {
+        // Never lose a clip silently: keep it untouched and report it.
+        unplaced.push(attr(node, 'id') ?? getText(node, 'name'))
+        next.push(node)
+        continue
+      }
+      for (const { piece, keepIndex } of pieces) {
         next.push(piece)
         clipPieces++
         const id = attr(piece, 'id')
@@ -256,6 +286,6 @@ export function applyCutsToXml(xml: string, cuts: CutRangeSeconds[], newName: st
   const body = new XMLBuilder(OPTS).build(doc) as string
   return {
     xml: prolog + body,
-    stats: { fps, originalFrames, newFrames, removedFrames: originalFrames - newFrames, clipPieces, transitionsDropped, markersDropped },
+    stats: { fps, originalFrames, newFrames, removedFrames: originalFrames - newFrames, clipPieces, transitionsDropped, markersDropped, unplaced },
   }
 }
