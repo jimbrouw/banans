@@ -142,7 +142,8 @@ def call_claude(system: str, user: str, api_key: str, model: str, schema: dict =
         # No server-side fallback: it can re-run a declined request on another (pricier) model.
         response = client.messages.create(
             model=model,
-            max_tokens=16000,
+            # Thinking counts towards this (you only pay for what is used). Above ~21k the SDK insists on streaming.
+            max_tokens=20000,
             system=system,
             messages=[{"role": "user", "content": user}],
             output_config={"effort": CLAUDE_EFFORT[model], "format": {"type": "json_schema", "schema": schema}},
