@@ -59,9 +59,14 @@ export function writeLog(entry: LogEntry): void {
   }).catch(() => { /* ignore log failures */ })
 }
 
+let running = 0
+/** True while a logged action is in progress (the panel holds off following sequence switches). */
+export const isRunning = () => running > 0
+
 /** Run an action, log OK/FAIL with timing and details, and pass the result or error through. */
 export async function logged<T>(action: string, details: Record<string, unknown>, run: () => Promise<T>, describe?: (result: T) => string): Promise<T> {
   const started = Date.now()
+  running++
   try {
     const result = await run()
     writeLog({ at: new Date(), status: 'OK', action, ms: Date.now() - started, result: describe?.(result), details })
@@ -69,5 +74,7 @@ export async function logged<T>(action: string, details: Record<string, unknown>
   } catch (error) {
     writeLog({ at: new Date(), status: 'FAIL', action, ms: Date.now() - started, details: { ...details, error: error instanceof Error ? error.message : String(error) } })
     throw error
+  } finally {
+    running--
   }
 }

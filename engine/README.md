@@ -2,7 +2,7 @@
 
 A local companion service for the RoughCut Premiere panel. Optional: the panel uses Premiere's own transcript first and only needs the engine for exact pause detection, Whisper when Premiere hasn't transcribed, the AI pass, and Podcast Mode's mic detection. UXP panels can't run binaries, but they can `fetch` localhost, so the heavy work runs here. It's free, needs no account and sends nothing to the cloud.
 
-- **Binds to `127.0.0.1:7317` only.** The panel sends a media **file path**, never the file itself.
+- **Listens on `localhost:7317` only.** The panel must use the name `localhost`: Premiere on macOS only allows plain `http://` to that host (its App Transport Security exception), not `127.0.0.1`. The panel sends a media **file path**, never the file itself.
 - **Mac only (Apple Silicon).** Transcription uses [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper), which runs on Metal.
 
 ## Run
@@ -13,7 +13,7 @@ A local companion service for the RoughCut Premiere panel. Optional: the panel u
 ./install.sh
 ```
 
-macOS then listens on 127.0.0.1:7317 without running anything. When the RoughCut panel connects, macOS starts the engine (about 0.3 s); after 10 minutes with no requests it quits. Nothing runs while you're not using Premiere. Undo with `./uninstall.sh`. Engine output: `~/Library/Logs/RoughCut/engine.log`.
+macOS then listens on localhost:7317 (IPv4 and IPv6) without running anything. When the RoughCut panel connects, macOS starts the engine (about 0.3 s); after 10 minutes with no requests it quits. Nothing runs while you're not using Premiere. Undo with `./uninstall.sh`. Engine output: `~/Library/Logs/RoughCut/engine.log`.
 
 **Development: run by hand.** This binds the port itself and stays up:
 

@@ -46,7 +46,7 @@ src/
   panels/PodcastMode.tsx       Podcast Mode block in Auto-Cut: Premiere labels first, mic fallback
   xmlCut.ts                    Pure: remove time ranges from a Premiere FCP XML export
   xmlCutHost.ts                Premiere glue: export XML → xmlCut → import → open new sequence
-  engineClient.ts              Typed fetch client for the local engine (127.0.0.1:7317)
+  engineClient.ts              Typed fetch client for the local engine (localhost:7317)
   ui.tsx                       Shared components: Press, Toggle
   sequenceNames.ts             Pure: numbered names for generated sequences ("Seq — Auto Cut 03 (…)")
   projectBin.ts                Files generated sequences into the "RoughCut" bin
@@ -92,6 +92,10 @@ npm run build      # Production bundle → dist/
 
 ---
 
+## Active sequence
+
+The panel follows Premiere's Timeline: `App.followTimeline` runs on Premiere's `SequenceEvent.ACTIVATED` and every 1.5 s as a safety net, but never while a logged action is running (`runLog.isRunning`), because actions like Auto Cut open the sequence they create. The picker under "Active sequence" lists every sequence in the project; choosing one calls `premiere.activateSequence`, which opens it in the Timeline. On a switch, results from the previous sequence are cleared (panels are keyed by sequence id), a `Sequence changed` line is logged, and a banner keeps the last "Created …" visible.
+
 ## Generated sequences: names, bin, run log
 
 - **Names:** `<source> — <action> <NN> (<details>)`, e.g. `Sequence 01 — Auto Cut 03 (Balanced · 41 cuts · mics)`.
@@ -105,7 +109,7 @@ npm run build      # Production bundle → dist/
 
 ## Local engine (`engine/`)
 
-UXP panels can't spawn processes, so anything that needs ffmpeg or an ML model runs in a separate local Python service the panel calls over `http://127.0.0.1:7317`.
+UXP panels can't spawn processes, so anything that needs ffmpeg or an ML model runs in a separate local Python service the panel calls over `http://localhost:7317`.
 
 ```
 Panel (UXP) ── engineClient.ts ──fetch──▶ roughcut-engine (FastAPI, uv)
@@ -113,12 +117,14 @@ Panel (UXP) ── engineClient.ts ──fetch──▶ roughcut-engine (FastAPI
                                             └─ POST /transcribe mlx-whisper, word timestamps, fillers kept
 ```
 
-- **On demand (normal):** run `engine/install.sh` once. macOS then holds 127.0.0.1:7317 (socket activation, no process) and starts the engine when the panel connects; it quits after 10 idle minutes (`RC_ENGINE_IDLE`). Undo with `engine/uninstall.sh`. Engine output goes to `~/Library/Logs/RoughCut/engine.log`.
+- **On demand (normal):** run `engine/install.sh` once. macOS then holds localhost:7317, IPv4 and IPv6 (socket activation, no process) and starts the engine when the panel connects; it quits after 10 idle minutes (`RC_ENGINE_IDLE`). Undo with `engine/uninstall.sh`. Engine output goes to `~/Library/Logs/RoughCut/engine.log`.
 - **By hand (development):** `cd engine && uv run roughcut-engine` binds the port itself and stays up.
 - The header shows **Engine** (green) or **Engine off**; its 10-second health poll is what wakes the engine, so it stays up while the panel is open.
 - The panel passes the clip's media **path** (Probe F checks we can read it); the engine reads the file directly.
 - `engineHealth()` returns `null` when the engine is down, and every feature must keep working on Premiere's own transcript in that case.
-- Manifest allows `http://127.0.0.1:7317` (needs UDT Unload → Load). **Not yet verified in UXP**: whether UXP's network permission accepts plain http to localhost.
+- **Must be `http://localhost:7317`, never `127.0.0.1`.** Premiere on macOS blocks plain `http://` except to `localhost` (its Info.plist App Transport Security exception). With `127.0.0.1` the panel's requests never left Premiere and the pill showed "Engine off" with no clue why.
+- Manifest allows `http://localhost:7317` (needs UDT Unload → Load).
+- `EngineStatus` logs every on/off change with Premiere's own error text (`Engine check` lines in the run log).
 - The **Clean-up review** panel (ROADMAP Phase 2) is the first consumer, described below.
 
 ### Clean-up review flow

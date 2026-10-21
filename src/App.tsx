@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Clapperboard, Lock } from 'lucide-react'
 import { analyseTranscript } from './analyse'
 import { sequence as demoSequence } from './mockPremiere'
 import { isPremiereHost, premiere } from './premiereAdapter'
 import { errorMessage } from './uiHelpers'
-import { logged, logPath, writeLog } from './runLog'
+import { isRunning, logged, logPath, writeLog } from './runLog'
 import type { AnalysisSettings, EditDecision, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
 import { SequencePanel, SpeakerMappingPanel } from './panels/SequencePanel'
 import { AnalysisPanel } from './panels/AnalysisPanel'
@@ -24,16 +24,47 @@ export default function App() {
   const [segments, setSegments] = useState<TranscriptSegment[]>([])
   const [status, setStatus] = useState<'loading' | 'ready' | 'analysing' | 'results' | 'creating' | 'created' | 'error'>('loading')
   const [error, setError] = useState('')
+  const [sequences, setSequences] = useState<{ id: string; name: string }[]>([])
+  const [lastCreated, setLastCreated] = useState('')
+  const sequenceId = useRef('')
   const selected = decisions.filter((d) => d.selected)
 
-  useEffect(() => {
-    premiere.getActiveSequence()
-      .then(async (activeSequence) => {
-        setSequence(activeSequence); setStatus('ready')
-        writeLog({ at: new Date(), status: 'INFO', action: 'Panel opened', details: { sequence: activeSequence.name, host: isPremiereHost() ? 'premiere' : 'browser', log: await logPath() ?? 'console' } })
-      })
-      .catch((reason: unknown) => { setError(errorMessage(reason)); setStatus('error') })
+  // Follow Premiere's active sequence. Results belong to one sequence, so a switch
+  // clears them (panels below are keyed by sequence id and start fresh). Never
+  // switch mid-action: actions like Auto Cut open the sequence they create.
+  const followTimeline = useCallback(async () => {
+    if (isRunning()) return
+    try {
+      const active = await premiere.getActiveSequence()
+      setSequences(await premiere.listSequences())
+      if (active.id === sequenceId.current) return
+      const first = sequenceId.current === ''
+      sequenceId.current = active.id
+      setSequence(active); setDecisions([]); setSegments([]); setError(''); setStatus('ready')
+      writeLog(first
+        ? { at: new Date(), status: 'INFO', action: 'Panel opened', details: { sequence: active.name, host: isPremiereHost() ? 'premiere' : 'browser', log: await logPath() ?? 'console' } }
+        : { at: new Date(), status: 'INFO', action: 'Sequence changed', details: { sequence: active.name } })
+    } catch (reason) {
+      if (sequenceId.current === '') { setError(errorMessage(reason)); setStatus('error') }
+    }
   }, [])
+
+  useEffect(() => {
+    const first = setTimeout(followTimeline, 0)
+    const stopWatching = premiere.watchActiveSequence(() => { followTimeline() })
+    const timer = setInterval(followTimeline, 1500) // safety net if the event doesn't fire
+    return () => { clearTimeout(first); stopWatching(); clearInterval(timer) }
+  }, [followTimeline])
+
+  const chooseSequence = async (id: string) => {
+    try {
+      await premiere.activateSequence(id)
+      await followTimeline()
+    } catch (reason) {
+      setError(errorMessage(reason))
+    }
+  }
+
 
   const analyseSegments = async (transcript: TranscriptSegment[]) => {
     setSegments(transcript)
@@ -65,7 +96,7 @@ export default function App() {
     try {
       setError('')
       setStatus('creating')
-      await logged('Review Markers', { source: sequence.name, markers: selected.length }, () => premiere.createRoughCut(sequence.id, selected, mappings), (n) => n)
+      setLastCreated(await logged('Review Markers', { source: sequence.name, markers: selected.length }, () => premiere.createRoughCut(sequence.id, selected, mappings), (n) => n))
       setStatus('created')
     } catch (reason) {
       setError(errorMessage(reason))
@@ -83,19 +114,20 @@ export default function App() {
       <section className="panel" aria-label="RoughCut podcast edit assistant">
         <header><div className="brand-mark"><Clapperboard size={19} /></div><div><h1>RoughCut</h1><p>Podcast Edit Assistant</p></div><span className="host-label">{isPremiereHost() ? 'PREMIERE PRO' : 'BROWSER DEMO'}</span><EngineStatus /></header>
 
-        <SequencePanel sequence={sequence} loading={status === 'loading'} />
+        <SequencePanel sequence={sequence} sequences={sequences} loading={status === 'loading'} onSelect={chooseSequence} />
+        {lastCreated && <div className="success created-banner"><Check size={16} /> Created "{lastCreated}" (in the RoughCut bin, now open in the Timeline)</div>}
         <SpeakerMappingPanel mappings={mappings} onChange={updateMapping} />
         <AnalysisPanel settings={settings} onPatch={patchSettings} busy={busy} buttonLabel={analyseLabel} error={error} onAnalyse={runAnalysis} />
-        <ReviewPanel sequenceId={sequence.id} />
+        <ReviewPanel key={`review-${sequence.id}`} sequenceId={sequence.id} onCreated={setLastCreated} />
 
         {decisions.length > 0 && <section className="section results">
           <ResultsPanel decisions={decisions} setDecisions={setDecisions} sequenceName={sequence.name} creating={status === 'creating'} created={status === 'created'} onCreateRoughCut={createRoughCut} />
-          <ColdOpenPanel sequenceId={sequence.id} segments={segments} />
+          <ColdOpenPanel key={`cold-${sequence.id}`} sequenceId={sequence.id} segments={segments} onCreated={setLastCreated} />
           <p className="safety"><Lock size={14} /> Original sequence stays untouched</p>
           {status === 'created' && <div className="success"><Check size={16} /> Action completed. Check the Project panel for your new sequence.</div>}
         </section>}
 
-        <AutoCutPanel sequenceId={sequence.id} segments={segments} mappings={mappings} />
+        <AutoCutPanel key={`autocut-${sequence.id}`} sequenceId={sequence.id} segments={segments} mappings={mappings} onCreated={setLastCreated} />
       </section>
     </main>
   )

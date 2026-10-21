@@ -34,14 +34,21 @@ const pickBrowserFile = () => new Promise<File | undefined>((resolve) => {
 })
 
 export class MockPremiereAdapter implements PremiereAdapter {
-  // Sequences 'created' this session, so demo names count up like they do in Premiere.
-  private names: string[] = [sequence.name]
+  // Demo project: the episode plus anything 'created' this session, so names count up
+  // and the sequence picker behaves like it does in Premiere.
+  private sequences: SequenceInfo[] = [sequence, { ...sequence, id: 'seq-043', name: 'Episode 043 - Solo Talk' }]
+  private activeId = sequence.id
+  private watchers = new Set<() => void>()
   private create(action: RunAction, detail: string) {
-    const name = nextSequenceName(sequence.name, action, detail, this.names)
-    this.names.push(name)
+    const active = this.sequences.find((s) => s.id === this.activeId) ?? sequence
+    const name = nextSequenceName(active.name, action, detail, this.sequences.map((s) => s.name))
+    this.sequences.push({ ...active, id: `seq-${this.sequences.length + 100}`, name })
     return name
   }
-  async getActiveSequence() { await wait(100); return sequence }
+  async getActiveSequence() { await wait(100); return this.sequences.find((s) => s.id === this.activeId) ?? sequence }
+  async listSequences() { return this.sequences.map(({ id, name }) => ({ id, name })) }
+  async activateSequence(id: string) { this.activeId = id; this.watchers.forEach((w) => w()) }
+  watchActiveSequence(onChange: () => void) { this.watchers.add(onChange); return () => { this.watchers.delete(onChange) } }
   async getTranscript(sequenceId: string) { void sequenceId; await wait(180); return transcript }
   async importTranscriptFile() {
     const file = await pickBrowserFile()

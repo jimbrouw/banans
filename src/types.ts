@@ -55,6 +55,9 @@ export interface SequenceInfo {
 
 export interface PremiereAdapter {
   getActiveSequence(): Promise<SequenceInfo>
+  listSequences(): Promise<{ id: string; name: string }[]>
+  activateSequence(id: string): Promise<void>
+  watchActiveSequence(onChange: () => void): () => void
   getTranscript(sequenceId: string): Promise<TranscriptSegment[]>
   importTranscriptFile(): Promise<TranscriptSegment[]>
   addMarkers(sequenceId: string, decisions: EditDecision[]): Promise<void>

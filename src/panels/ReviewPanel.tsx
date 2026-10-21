@@ -20,7 +20,7 @@ const overlaps = (a: { start: number; end: number }, b: { start: number; end: nu
 const stored = (key: string, fallback: string) => { try { return localStorage.getItem(key) ?? fallback } catch { return fallback } }
 const store = (key: string, value: string) => { try { localStorage.setItem(key, value) } catch { /* localStorage unavailable */ } }
 
-export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
+export function ReviewPanel({ sequenceId, onCreated }: { sequenceId: string; onCreated: (name: string) => void }) {
   const [settings, setSettings] = useState<ReviewSettings>(defaultReviewSettings)
   const [words, setWords] = useState<ReviewWord[]>([])
   const [silences, setSilences] = useState<SilenceRange[]>([])
@@ -141,6 +141,7 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
       setError(''); setStatus('creating')
       const name = await logged('Clean-up Markers', { cuts: summary.count }, () => premiere.createRoughCut(sequenceId, cutsToDecisions(cuts), [], { action: 'Clean-up Markers', detail: runDetail }), (n) => n)
       setResult(`Created "${name}" with ${summary.count} cut markers.`)
+      onCreated(name)
       setStatus('created')
     } catch (reason) {
       setError(errorMessage(reason)); setStatus('error')
@@ -154,7 +155,10 @@ export function ReviewPanel({ sequenceId }: { sequenceId: string }) {
         () => removeCutsViaXml(cuts.filter((c) => c.active), runDetail),
         (d) => d ? `${d.name} · ${(d.stats.removedFrames / d.stats.fps).toFixed(1)}s removed · ${d.stats.transitionsDropped} transitions dropped · ${d.stats.unplaced.length} unplaced` : 'demo')
       if (!done) { await wait(600); setResult(`Demo: would create "Episode — Clean-up 01 (${runDetail})".`) }
-      else setResult(`Created "${done.name}": ${(done.stats.removedFrames / done.stats.fps).toFixed(1)}s removed across ${summary.count} cuts${done.stats.transitionsDropped ? `, ${done.stats.transitionsDropped} transitions dropped` : ''}${done.stats.unplaced.length ? `. ${done.stats.unplaced.length} clips couldn't be placed and were left unedited: check them` : ''}.`)
+      else {
+        onCreated(done.name)
+        setResult(`Created "${done.name}": ${(done.stats.removedFrames / done.stats.fps).toFixed(1)}s removed across ${summary.count} cuts${done.stats.transitionsDropped ? `, ${done.stats.transitionsDropped} transitions dropped` : ''}${done.stats.unplaced.length ? `. ${done.stats.unplaced.length} clips couldn't be placed and were left unedited: check them` : ''}.`)
+      }
       setStatus('created')
     } catch (reason) {
       setError(errorMessage(reason)); setStatus('error')

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { ENGINE_OFF_MESSAGE, engineHealth } from '../engineClient'
+import { ENGINE_OFF_MESSAGE, ENGINE_URL, engineHealth, lastEngineError } from '../engineClient'
+import { writeLog } from '../runLog'
 import type { EngineHealth } from '../engineClient'
 
 const POLL_MS = 10_000
@@ -10,7 +11,18 @@ export function EngineStatus() {
 
   useEffect(() => {
     let alive = true
-    const check = () => engineHealth().then((h) => { if (alive) setHealth(h) })
+    let wasOnline: boolean | undefined
+    const check = () => engineHealth().then((h) => {
+      if (!alive) return
+      setHealth(h)
+      // Log each change, with Premiere's own error text, so "Engine off" is never a mystery.
+      if (wasOnline !== !!h) {
+        writeLog(h
+          ? { at: new Date(), status: 'OK', action: 'Engine check', result: `online · ${h.version}`, details: { url: ENGINE_URL } }
+          : { at: new Date(), status: 'FAIL', action: 'Engine check', details: { url: ENGINE_URL, error: lastEngineError } })
+        wasOnline = !!h
+      }
+    })
     check()
     const timer = setInterval(check, POLL_MS)
     return () => { alive = false; clearInterval(timer) }

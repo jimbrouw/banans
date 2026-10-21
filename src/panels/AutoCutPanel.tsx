@@ -17,9 +17,10 @@ interface Props {
   sequenceId: string
   segments: TranscriptSegment[]
   mappings: SpeakerMapping[]
+  onCreated: (name: string) => void
 }
 
-export function AutoCutPanel({ sequenceId, segments, mappings }: Props) {
+export function AutoCutPanel({ sequenceId, segments, mappings, onCreated }: Props) {
   const [autoCutDet, setAutoCutDet] = useState<DetectedSources | null>(null)
   const [autoCutStatus, setAutoCutStatus] = useState<'idle' | 'detecting' | 'detected' | 'applying' | 'done' | 'error'>('idle')
   const [autoCutError, setAutoCutError] = useState('')
@@ -46,6 +47,7 @@ export function AutoCutPanel({ sequenceId, segments, mappings }: Props) {
       setAutoCutStatus('applying')
       const name = await logged('Auto Cut', { cuts: cuts.length, detail }, () => premiere.applyCutMap(sequenceId, cuts, autoCutDet!, endFrame, detail), (n) => n)
       setAutoCutResult(name)
+      onCreated(name)
       setAutoCutStatus('done')
     } catch (reason) {
       setAutoCutError(errorMessage(reason))

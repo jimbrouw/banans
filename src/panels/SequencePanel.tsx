@@ -1,14 +1,28 @@
-import { Check, ChevronDown, Film } from 'lucide-react'
+import { Check, Film } from 'lucide-react'
 import { Press } from '../ui'
 import type { SequenceInfo, SpeakerMapping } from '../types'
 
 const cameras = ['Camera 1', 'Camera 2', 'Wide']
 
-export function SequencePanel({ sequence, loading }: { sequence: SequenceInfo; loading: boolean }) {
+interface SequenceProps {
+  sequence: SequenceInfo
+  sequences: { id: string; name: string }[]
+  loading: boolean
+  onSelect: (id: string) => void
+}
+
+/** Follows Premiere's active sequence; the picker opens another sequence in the Timeline. */
+export function SequencePanel({ sequence, sequences, loading, onSelect }: SequenceProps) {
   return (
     <section className="section sequence-section">
-      <div className="section-title"><h2>Active sequence</h2><span className="live-dot">Connected</span></div>
-      <Press className="sequence-row"><Film size={20} /><strong>{sequence.name}</strong><ChevronDown size={17} /></Press>
+      <div className="section-title"><h2>Active sequence</h2><span className="live-dot">Follows the Timeline</span></div>
+      <label className="sequence-row sequence-picker">
+        <Film size={20} />
+        <select value={sequence.id} onChange={(e) => onSelect(e.target.value)} aria-label="Sequence">
+          {!sequences.some((s) => s.id === sequence.id) && <option value={sequence.id}>{sequence.name}</option>}
+          {sequences.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+      </label>
       <div className="transcript-row"><span className="check-icon"><Check size={14} /></span><strong>{loading ? 'Connecting...' : 'Sequence ready'}</strong><span>{Math.floor(sequence.duration / 60)}:{String(sequence.duration % 60).padStart(2, '0')}{sequence.transcriptCoverage ? ` · ${sequence.transcriptCoverage}% demo coverage` : ''}</span></div>
     </section>
   )

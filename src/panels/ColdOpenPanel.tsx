@@ -8,7 +8,7 @@ import { logged } from '../runLog'
 import type { ColdOpenOption } from '../coldOpenFinder'
 import type { TranscriptSegment } from '../types'
 
-export function ColdOpenPanel({ sequenceId, segments }: { sequenceId: string; segments: TranscriptSegment[] }) {
+export function ColdOpenPanel({ sequenceId, segments, onCreated }: { sequenceId: string; segments: TranscriptSegment[]; onCreated: (name: string) => void }) {
   const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem('roughcut.anthropicKey') ?? '' } catch { return '' } })
   const [coldOpens, setColdOpens] = useState<ColdOpenOption[]>([])
   const [coldOpenStatus, setColdOpenStatus] = useState<'idle' | 'finding' | 'done' | 'assembling' | 'error'>('idle')
@@ -38,6 +38,7 @@ export function ColdOpenPanel({ sequenceId, segments }: { sequenceId: string; se
       const name = await logged('Cold Open', { start: option.startSeconds, end: option.endSeconds, shots: option.shots.length, archetype: option.archetype },
         () => premiere.assembleColdOpenClip(sequenceId, option.startSeconds, option.endSeconds, option.shots), (n) => n)
       setColdOpenResult(name)
+      onCreated(name)
       setColdOpenStatus('done')
     } catch (reason) {
       setColdOpenError(errorMessage(reason))

@@ -56,6 +56,32 @@ class UxpPremiereAdapter implements PremiereAdapter {
     return { project, sequence }
   }
 
+  async listSequences(): Promise<{ id: string; name: string }[]> {
+    const project = await this.ppro.Project.getActiveProject()
+    if (!project) return []
+    return (await project.getSequences())
+      .map((s) => ({ id: s.guid.toString(), name: s.name }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+  }
+
+  /** Open a sequence in the Timeline, making it Premiere's active sequence. */
+  async activateSequence(id: string): Promise<void> {
+    const project = await this.ppro.Project.getActiveProject()
+    if (!project) throw new Error('Open a Premiere project before using RoughCut.')
+    if (!await project.setActiveSequence(await this.findSequenceByGuid(project, id))) throw new Error('Premiere could not open that sequence.')
+  }
+
+  /** Call back whenever Premiere activates a sequence. Returns a function that stops listening. */
+  watchActiveSequence(onChange: () => void): () => void {
+    try {
+      const event = this.ppro.Constants.SequenceEvent.ACTIVATED
+      this.ppro.EventManager.addGlobalEventListener(event, onChange)
+      return () => { try { this.ppro.EventManager.removeGlobalEventListener(event, onChange) } catch { /* already gone */ } }
+    } catch {
+      return () => {} // event not available in this Premiere build; the panel's polling still catches switches
+    }
+  }
+
   async getActiveSequence(): Promise<SequenceInfo> {
     const { sequence } = await this.context()
     const end = await sequence.getEndTime()

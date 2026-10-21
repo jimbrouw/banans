@@ -47,7 +47,7 @@ UXP panels **cannot run binaries**, but they **can `fetch` localhost**. So Rough
 
 ```
 Premiere ── RoughCut UXP panel (React, existing)
-               │  fetch http://127.0.0.1:7317
+               │  fetch http://localhost:7317
                ▼
         roughcut-engine  (local helper, no cloud, no account)
           ├─ /transcribe   whisper.cpp (Metal) → words + timestamps, fillers kept
@@ -60,7 +60,7 @@ Premiere ── RoughCut UXP panel (React, existing)
 ```
 
 - The panel gets each clip's media file path from Premiere and sends the **path**, not the file. Nothing leaves the machine.
-- Manifest: add `http://127.0.0.1:7317` to `network.domains`.
+- Manifest: add `http://localhost:7317` to `network.domains` (must be `localhost`: Premiere's macOS ATS exception).
 - The helper starts at login (a launchd agent) or from a menubar app. If it isn't running, the panel shows "Start RoughCut Engine". Every feature still works in degraded mode on Premiere's own transcript.
 - Results are cached per media file hash, so a re-run is instant.
 

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from roughcut_engine.__main__ import IdleWatch, add_idle_tracking, launchd_socket
+from roughcut_engine.__main__ import IdleWatch, add_idle_tracking, launchd_sockets
 
 
 class Clock:
@@ -42,4 +42,4 @@ def test_middleware_tracks_requests():
 
 
 def test_no_launchd_socket_when_started_by_hand():
-    assert launchd_socket() is None
+    assert launchd_sockets() == []

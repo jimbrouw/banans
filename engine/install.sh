@@ -1,7 +1,8 @@
 #!/bin/bash
 # One-time setup: let macOS start the RoughCut engine on demand.
 #
-# macOS holds 127.0.0.1:7317 (no process, no memory). When the Premiere panel
+# macOS holds localhost:7317 (no process, no memory). It must be the name
+# "localhost": Premiere on macOS only allows plain http:// to that host name. When the Premiere panel
 # connects, the engine starts; after 10 idle minutes it quits again.
 # Undo with ./uninstall.sh.
 set -euo pipefail
@@ -35,10 +36,9 @@ cat > "$PLIST" <<EOF
   <dict>
     <key>Listener</key>
     <dict>
-      <key>SockNodeName</key><string>127.0.0.1</string>
+      <key>SockNodeName</key><string>localhost</string>
       <key>SockServiceName</key><string>7317</string>
       <key>SockType</key><string>stream</string>
-      <key>SockFamily</key><string>IPv4</string>
     </dict>
   </dict>
   <key>StandardOutPath</key><string>$LOG_DIR/engine.log</string>

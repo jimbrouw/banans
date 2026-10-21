@@ -21,17 +21,17 @@ IDLE_SECONDS = float(os.environ.get("RC_ENGINE_IDLE", "600"))
 LAUNCHD_SOCKET = b"Listener"  # must match the Sockets key in install.sh's plist
 
 
-def launchd_socket() -> socket.socket | None:
-    """The listening socket launchd passed us, or None when started by hand."""
+def launchd_sockets() -> list[socket.socket]:
+    """The listening sockets launchd passed us (one per address of localhost), or [] when started by hand."""
     try:
         libc = ctypes.CDLL(None)
         fds = ctypes.POINTER(ctypes.c_int)()
         count = ctypes.c_size_t(0)
-        if libc.launch_activate_socket(LAUNCHD_SOCKET, ctypes.byref(fds), ctypes.byref(count)) != 0 or count.value == 0:
-            return None
-        return socket.socket(fileno=fds[0])
+        if libc.launch_activate_socket(LAUNCHD_SOCKET, ctypes.byref(fds), ctypes.byref(count)) != 0:
+            return []
+        return [socket.socket(fileno=fds[i]) for i in range(count.value)]
     except (AttributeError, OSError):
-        return None
+        return []
 
 
 class IdleWatch:
@@ -71,8 +71,8 @@ def add_idle_tracking(app, watch: IdleWatch):
 def main() -> None:
     from .app import app
 
-    sock = launchd_socket()
-    if sock is None:
+    sockets = launchd_sockets()
+    if not sockets:
         uvicorn.run(app, host="127.0.0.1", port=PORT)
         return
 
@@ -88,7 +88,7 @@ def main() -> None:
                 server.should_exit = True
 
     threading.Thread(target=stop_when_idle, daemon=True).start()
-    server.run(sockets=[sock])
+    server.run(sockets=sockets)
 
 
 if __name__ == "__main__":
