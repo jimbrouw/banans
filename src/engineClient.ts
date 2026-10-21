@@ -4,6 +4,8 @@
 // UXP can't run binaries, but it can fetch localhost; the engine does the
 // heavy lifting (transcription, silence detection) on the user's machine.
 
+import { claudeModel } from './settings'
+
 export const ENGINE_URL = 'http://localhost:7317'
 export const ENGINE_OFF_MESSAGE = 'The local engine isn’t set up. Run engine/install.sh once and it starts by itself when RoughCut needs it.'
 
@@ -63,6 +65,8 @@ export const micLevels = (path: string, channel: number | null) =>
   call<LevelsResult>('/levels', { path, channel, rate: 10 }, 10 * 60_000)
 
 export type AiProvider = 'ollama' | 'claude'
+/** Claude calls always name the chosen cheap model, so the engine never falls back to its own default. */
+const modelFor = (provider: AiProvider) => (provider === 'claude' ? claudeModel().id : undefined)
 export interface AiEditResult {
   provider: AiProvider
   model: string
@@ -77,6 +81,7 @@ export const aiEdit = (
 ) => call<AiEditResult>('/edit', {
   units,
   provider: opts.provider,
+  model: modelFor(opts.provider),
   api_key: opts.apiKey || undefined,
   instruction: opts.instruction || undefined,
   prefer_last_take: opts.preferLastTake,
@@ -108,7 +113,7 @@ interface Job<T> { status: 'running' | 'done' | 'error'; step: string; result: T
  * minutes on a local model: runs as an engine job, polled, reporting each step.
  */
 export async function findSelects(units: Units, opts: AiOpts & { audioPath?: string }, onStep: (step: string) => void = () => {}): Promise<SelectsResult> {
-  const { job } = await call<{ job: string }>('/jobs/selects', { units, provider: opts.provider, api_key: opts.apiKey || undefined, audio_path: opts.audioPath }, 30_000)
+  const { job } = await call<{ job: string }>('/jobs/selects', { units, provider: opts.provider, model: modelFor(opts.provider), api_key: opts.apiKey || undefined, audio_path: opts.audioPath }, 30_000)
   const deadline = Date.now() + 60 * 60_000
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 2500))
@@ -121,4 +126,4 @@ export async function findSelects(units: Units, opts: AiOpts & { audioPath?: str
 }
 
 export const makeChapters = (units: Units, opts: AiOpts) =>
-  call<ChaptersResult>('/chapters', { units, provider: opts.provider, api_key: opts.apiKey || undefined }, 10 * 60_000)
+  call<ChaptersResult>('/chapters', { units, provider: opts.provider, model: modelFor(opts.provider), api_key: opts.apiKey || undefined }, 10 * 60_000)

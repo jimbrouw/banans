@@ -110,7 +110,7 @@ def test_call_ollama_explains_missing_model_and_not_running():
 class FakeClaude:
     def __init__(self, response):
         self.kwargs = None
-        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._create))
+        self.messages = SimpleNamespace(create=self._create)
         self._response = response
 
     def _create(self, **kwargs):
@@ -125,19 +125,28 @@ def claude_response(text: str, stop_reason: str = "end_turn"):
 def test_call_claude_request_shape(monkeypatch):
     fake = FakeClaude(claude_response('{"remove": [{"lines": [1], "reason": "retake", "note": "n"}], "keep": []}'))
     monkeypatch.setattr(edit, "make_claude_client", lambda key: fake)
-    out = call_claude("sys", "user", "sk-test", "claude-opus-5-5")
+    out = call_claude("sys", "user", "sk-test", "claude-haiku-5-5")
     assert out["remove"][0]["lines"] == [1]
     k = fake.kwargs
-    assert k["model"] == "claude-opus-5-5"
-    assert k["fallbacks"] == "default" and k["betas"] == ["server-side-fallback-2026-07-01"]
+    assert k["model"] == "claude-haiku-5-5"
+    assert "fallbacks" not in k and "betas" not in k   # never re-run on another model
     assert k["output_config"] == {"effort": "high", "format": {"type": "json_schema", "schema": edit.SCHEMA}}
     assert k["system"] == "sys" and k["messages"] == [{"role": "user", "content": "user"}]
+    call_claude("sys", "user", "sk-test", "claude-sonnet-5-5")
+    assert fake.kwargs["output_config"]["effort"] == "low"
+
+
+def test_call_claude_refuses_other_models(monkeypatch):
+    monkeypatch.setattr(edit, "make_claude_client", lambda key: FakeClaude(claude_response("{}")))
+    for model in ("claude-opus-5-5", "claude-opus-4-8", "claude-fable-5-1"):
+        with pytest.raises(EditError, match="only uses Claude Haiku 5.5 or Sonnet 5.5"):
+            call_claude("s", "u", "k", model)
 
 
 def test_call_claude_refusal(monkeypatch):
     monkeypatch.setattr(edit, "make_claude_client", lambda key: FakeClaude(claude_response("", "refusal")))
     with pytest.raises(EditError, match="declined"):
-        call_claude("s", "u", "k", "claude-opus-5-5")
+        call_claude("s", "u", "k", "claude-haiku-5-5")
 
 
 def test_edit_route():
@@ -160,7 +169,7 @@ def test_call_claude_through_real_sdk(monkeypatch):
         sent["headers"] = dict(request.headers)
         sent["body"] = json.loads(request.content)
         return httpx2.Response(200, json={
-            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-haiku-5-5",
             "content": [{"type": "text", "text": '{"remove": [], "keep": [3]}'}],
             "stop_reason": "end_turn", "stop_sequence": None,
             "usage": {"input_tokens": 10, "output_tokens": 5},
@@ -168,9 +177,8 @@ def test_call_claude_through_real_sdk(monkeypatch):
 
     client = anthropic.Anthropic(api_key="sk-test", http_client=httpx2.Client(transport=httpx2.MockTransport(handler)), max_retries=0)
     monkeypatch.setattr(edit, "make_claude_client", lambda key: client)
-    assert call_claude("sys", "user", "sk-test", "claude-opus-5-5") == {"remove": [], "keep": [3]}
+    assert call_claude("sys", "user", "sk-test", "claude-haiku-5-5") == {"remove": [], "keep": [3]}
     assert sent["headers"]["x-api-key"] == "sk-test"
-    assert "server-side-fallback-2026-07-01" in sent["headers"]["anthropic-beta"]
-    assert sent["body"]["fallbacks"] == "default"
-    assert sent["body"]["output_config"]["format"]["type"] == "json_schema"
-    assert sent["body"]["model"] == "claude-opus-5-5"
+    assert "anthropic-beta" not in sent["headers"] and "fallbacks" not in sent["body"]
+    assert sent["body"]["output_config"] == {"effort": "high", "format": {"type": "json_schema", "schema": edit.SCHEMA}}
+    assert sent["body"]["model"] == "claude-haiku-5-5"

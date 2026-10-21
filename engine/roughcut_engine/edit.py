@@ -17,7 +17,9 @@ import httpx
 
 OLLAMA_URL = os.environ.get("RC_OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("RC_OLLAMA_MODEL", "qwen3:8b")
-CLAUDE_MODEL = "claude-opus-5-5"
+# Cost: only these two, each at the effort that keeps it cheap. Never Opus.
+CLAUDE_EFFORT = {"claude-haiku-5-5": "high", "claude-sonnet-5-5": "low"}
+CLAUDE_MODEL = "claude-haiku-5-5"
 
 CHUNK_LINES = 250
 CHUNK_OVERLAP = 15
@@ -133,16 +135,17 @@ def make_claude_client(api_key: str):
 
 def call_claude(system: str, user: str, api_key: str, model: str, schema: dict = SCHEMA) -> dict:
     import anthropic
+    if model not in CLAUDE_EFFORT:
+        raise EditError(f"RoughCut only uses Claude Haiku 5.5 or Sonnet 5.5, not {model}.")
     client = make_claude_client(api_key)
     try:
-        response = client.beta.messages.create(
+        # No server-side fallback: it can re-run a declined request on another (pricier) model.
+        response = client.messages.create(
             model=model,
             max_tokens=16000,
             system=system,
             messages=[{"role": "user", "content": user}],
-            output_config={"effort": "high", "format": {"type": "json_schema", "schema": schema}},
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
+            output_config={"effort": CLAUDE_EFFORT[model], "format": {"type": "json_schema", "schema": schema}},
         )
     except anthropic.AuthenticationError as e:
         raise EditError("Claude rejected the API key.") from e

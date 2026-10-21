@@ -4,7 +4,7 @@ import { openExternal } from '../uiHelpers'
 import { ENGINE_OFF_MESSAGE, ENGINE_URL, engineHealth, lastEngineError } from '../engineClient'
 import type { EngineHealth } from '../engineClient'
 import { logPath } from '../runLog'
-import { readSetting, SETTINGS, writeSetting } from '../settings'
+import { CLAUDE_MODELS, claudeModel, readSetting, SETTINGS, writeSetting } from '../settings'
 import { isPremiereHost } from '../premiereAdapter'
 import { SpikePanel } from './SpikePanel'
 
@@ -13,6 +13,7 @@ export function SetupPanel() {
   const [engine, setEngine] = useState<EngineHealth | null | undefined>(undefined)
   const [engineError, setEngineError] = useState('')
   const [key, setKey] = useState(() => readSetting(SETTINGS.claudeKey))
+  const [model, setModel] = useState(() => claudeModel().id)
   const [log, setLog] = useState<string | null>(null)
 
   const check = async () => {
@@ -45,6 +46,11 @@ export function SetupPanel() {
         <p className="lede">Used for cold opens, and for retakes when you pick Claude instead of Ollama. Stays on this Mac.</p>
         <input className="api-key" type="password" autoComplete="off" placeholder="sk-ant-…" value={key} onChange={(e) => { setKey(e.target.value); writeSetting(SETTINGS.claudeKey, e.target.value.trim()) }} />
         <Press className="text-button" onClick={() => openExternal('https://console.anthropic.com/settings/keys')}>Get a key at console.anthropic.com</Press>
+        <div className="compact-settings">
+          <label>Claude model <select value={model} onChange={(e) => { setModel(e.target.value as typeof model); writeSetting(SETTINGS.claudeModel, e.target.value) }}>
+            {CLAUDE_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select></label>
+        </div>
       </section>
 
       <section className="block">

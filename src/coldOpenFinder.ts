@@ -1,4 +1,5 @@
 import type { TranscriptSegment } from './types'
+import { claudeModel } from './settings'
 
 /**
  * A single shot in the Energy Reset cut plan — what camera angle to use and
@@ -43,7 +44,6 @@ export interface ColdOpenOption {
   shots: ColdOpenShot[]
 }
 
-const MODEL = 'claude-opus-4-8'
 
 // The client's Podcast Cold Open Finder spec, used verbatim as the system prompt.
 const SYSTEM_PROMPT = `You are an expert YouTube video editor and retention strategist. Your job is to analyze the following podcast transcript and extract exactly 3 options for a 30-second "Cold Open" hook.
@@ -162,8 +162,10 @@ export async function findColdOpens(transcript: TranscriptSegment[], apiKey: str
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 4096,
+      model: claudeModel().id,
+      // Thinking counts towards max_tokens on current models, so leave room for it.
+      max_tokens: 16000,
+      output_config: { effort: claudeModel().effort },
       system: SYSTEM_PROMPT,
       messages: [{ role: 'user', content: `Transcript:\n\n${lines}` }],
     }),
@@ -175,7 +177,9 @@ export async function findColdOpens(transcript: TranscriptSegment[], apiKey: str
     throw new Error(`Claude API error ${res.status}. ${body.slice(0, 300)}`)
   }
 
-  const data = await res.json() as { content?: { type: string; text?: string }[] }
+  const data = await res.json() as { content?: { type: string; text?: string }[]; stop_reason?: string }
+  if (data.stop_reason === 'refusal') throw new Error('Claude declined to read this transcript.')
+  if (data.stop_reason === 'max_tokens') throw new Error("Claude's answer was cut off. Try again, or switch to Sonnet in Setup.")
   const text = (data.content ?? []).filter((b) => b.type === 'text').map((b) => b.text ?? '').join('')
   if (!text) throw new Error('Claude returned an empty response.')
   return extractOptions(text)

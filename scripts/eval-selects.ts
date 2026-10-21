@@ -22,6 +22,8 @@ const episodeDir = arg('episode', 'eval-input/kate-courtney')!
 const refsDir = arg('refs', 'xlr social clips')!
 const episodeName = arg('episode-name', 'Kate Courtney v1')!
 const provider = arg('provider', 'ollama')!
+// Claude: Haiku 5.5 (high effort) by default, or --model claude-sonnet-5-5 (low effort). Never Opus.
+const model = provider === 'claude' ? arg('model', 'claude-haiku-5-5') : undefined
 const audio = arg('audio')
 const mmss = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`
 
@@ -35,7 +37,7 @@ console.log(`${units.length} sentence lines, ${references.length} published clip
 const started = await fetch('http://localhost:7317/jobs/selects', {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ units, provider, api_key: process.env.ANTHROPIC_API_KEY, audio_path: audio }),
+  body: JSON.stringify({ units, provider, model, api_key: process.env.ANTHROPIC_API_KEY, audio_path: audio }),
 })
 const startBody = await started.json() as { job?: string; detail?: string }
 if (!started.ok || !startBody.job) { console.error(`Engine: ${startBody.detail}`); process.exit(1) }
