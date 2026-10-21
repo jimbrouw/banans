@@ -105,11 +105,11 @@ def parse_reply(text: str) -> dict:
 
 # ── providers ─────────────────────────────────────────────────────────────────
 
-def call_ollama(system: str, user: str, model: str, client: httpx.Client | None = None) -> dict:
+def call_ollama(system: str, user: str, model: str, client: httpx.Client | None = None, schema: dict = SCHEMA) -> dict:
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        "format": SCHEMA,
+        "format": schema,
         "stream": False,
         "think": False,
         "options": {"temperature": 0, "num_ctx": 32768},
@@ -131,7 +131,7 @@ def make_claude_client(api_key: str):
     return anthropic.Anthropic(api_key=api_key)
 
 
-def call_claude(system: str, user: str, api_key: str, model: str) -> dict:
+def call_claude(system: str, user: str, api_key: str, model: str, schema: dict = SCHEMA) -> dict:
     import anthropic
     client = make_claude_client(api_key)
     try:
@@ -140,7 +140,7 @@ def call_claude(system: str, user: str, api_key: str, model: str) -> dict:
             max_tokens=16000,
             system=system,
             messages=[{"role": "user", "content": user}],
-            output_config={"effort": "high", "format": {"type": "json_schema", "schema": SCHEMA}},
+            output_config={"effort": "high", "format": {"type": "json_schema", "schema": schema}},
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
         )
@@ -184,6 +184,18 @@ def to_ranges(ids: list[int], by_id: dict[int, Unit]) -> list[tuple[float, float
         else:
             runs.append([i])
     return [(by_id[r[0]].start, by_id[r[-1]].end, r) for r in runs]
+
+
+def asker(provider: str, model: str | None, api_key: str | None):
+    """A function (system, user, schema) -> dict for the chosen provider, for passes beyond /edit."""
+    if provider == "claude" and not api_key:
+        raise EditError("Add your Claude API key in Setup to use Claude, or switch to Ollama.")
+    if provider not in ("ollama", "claude"):
+        raise EditError(f"Unknown provider: {provider}")
+    model = model or (CLAUDE_MODEL if provider == "claude" else OLLAMA_MODEL)
+    if provider == "claude":
+        return model, lambda system, user, schema: call_claude(system, user, api_key, model, schema)
+    return model, lambda system, user, schema: call_ollama(system, user, model, schema=schema)
 
 
 def ai_edit(

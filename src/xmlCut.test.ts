@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { XMLParser } from 'fast-xml-parser'
 import { describe, expect, it } from 'vitest'
-import { applyCutsToXml, keepRanges } from './xmlCut'
+import { applyCutsToXml, applyPiecesToXml, keepRanges } from './xmlCut'
 
 // 25 fps, 100 frames. V1: clip A 0–60 (src 1000–1060) + transition + clip B 60–100 (src 0–40, start -1).
 // A1: audio for A, linked to the video. One sequence marker at frame 30.
@@ -147,6 +147,22 @@ describe('applyCutsToXml', () => {
 
   it('rejects non-xmeml input', () => {
     expect(() => applyCutsToXml('<fcpxml/>', [], 'x')).toThrow('Not an FCP XML')
+  })
+})
+
+describe('applyPiecesToXml', () => {
+  it('plays pieces in the order given, e.g. a hook pulled forward', () => {
+    // Hook: frames 88-96 (inside clip B's source after the transition), then frames 0-20 of clip A.
+    const { xml, stats } = applyPiecesToXml(SAMPLE, [{ start: 3.52, end: 3.84 }, { start: 0, end: 0.8 }], 'Talk — Clip 01')
+    const seq = seqOf(xml)
+    expect(stats.newFrames).toBe(28)
+    expect(seq.name).toBe('Talk — Clip 01')
+    const v = items(seq, 'video').map((c) => [c['@_id'], c.start, c.end, c.in, c.out])
+    expect(v).toEqual([
+      ['clipitem-2-0', 0, 8, 2028, 2036], // the hook from clip B's source, played first
+      ['clipitem-1-1', 8, 28, 1000, 1020],
+    ])
+    expect(items(seq, 'audio').map((c) => [c['@_id'], c.start, c.end])).toEqual([['clipitem-3-1', 8, 28]])
   })
 })
 

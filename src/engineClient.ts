@@ -81,3 +81,29 @@ export const aiEdit = (
   instruction: opts.instruction || undefined,
   prefer_last_take: opts.preferLastTake,
 }, 30 * 60_000)
+
+export interface SelectClip {
+  rank: number
+  title: string
+  title_check: { score: number; issues: string[] }
+  type: 'story' | 'opinion' | 'tip' | 'moment'
+  idea: string
+  opening_line: string
+  why: string
+  pieces: SilenceRange[]
+  duration: number
+  hook_pulled_forward: boolean
+  hook_score: { verdict: number; band: string; weakest: string; fix: string; formula: string }
+  energy: number | null
+}
+export interface SelectsResult { model: string; clips: SelectClip[]; proposed: number; valid: number; shortlisted: number }
+export interface ChaptersResult { model: string; valid: boolean; chapters: { start: number; label: string; title: string; seconds: number }[]; text: string }
+type Units = { id: number; start: number; end: number; text: string }[]
+type AiOpts = { provider: AiProvider; apiKey?: string }
+
+/** The few clips worth cutting from a whole episode. Reads everything, so it can take a few minutes. */
+export const findSelects = (units: Units, opts: AiOpts & { audioPath?: string }) =>
+  call<SelectsResult>('/selects', { units, provider: opts.provider, api_key: opts.apiKey || undefined, audio_path: opts.audioPath }, 30 * 60_000)
+
+export const makeChapters = (units: Units, opts: AiOpts) =>
+  call<ChaptersResult>('/chapters', { units, provider: opts.provider, api_key: opts.apiKey || undefined }, 10 * 60_000)

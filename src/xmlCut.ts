@@ -217,6 +217,27 @@ function shiftMarkers(seq: XNode, keeps: Keep[]): number {
 // ── main entry ────────────────────────────────────────────────────────────────
 
 export function applyCutsToXml(xml: string, cuts: CutRangeSeconds[], newName: string): { xml: string; stats: XmlCutStats } {
+  return transformXml(xml, (fps, total) => keepRanges(cuts, fps, total), newName)
+}
+
+/**
+ * Build a new sequence from pieces of this one, played in the order given, e.g. a
+ * social clip that opens on a line pulled forward from later in the passage.
+ */
+export function applyPiecesToXml(xml: string, pieces: CutRangeSeconds[], newName: string): { xml: string; stats: XmlCutStats } {
+  return transformXml(xml, (fps, total) => {
+    const keeps: Keep[] = []
+    let out = 0
+    for (const p of pieces) {
+      const start = Math.max(0, Math.round(p.start * fps))
+      const end = Math.min(total, Math.round(p.end * fps))
+      if (end > start) { keeps.push({ start, end, outStart: out }); out += end - start }
+    }
+    return keeps
+  }, newName)
+}
+
+function transformXml(xml: string, makeKeeps: (fps: number, totalFrames: number) => Keep[], newName: string): { xml: string; stats: XmlCutStats } {
   const text = xml.replace(/^\uFEFF/, '')
   const rootAt = text.indexOf('<xmeml')
   if (rootAt < 0) throw new Error('Not an FCP XML (xmeml) file.')
@@ -229,7 +250,7 @@ export function applyCutsToXml(xml: string, cuts: CutRangeSeconds[], newName: st
   const { fps } = rateOf(seq)
   if (!(fps > 0)) throw new Error('Could not read the sequence frame rate from the XML.')
   const originalFrames = getNum(seq, 'duration')
-  const keeps = keepRanges(cuts, fps, originalFrames)
+  const keeps = makeKeeps(fps, originalFrames)
   const media = child(seq, 'media')
   const tracks = media ? [...childrenNamed(child(media, 'video') ?? {}, 'track'), ...childrenNamed(child(media, 'audio') ?? {}, 'track')] : []
 
@@ -271,7 +292,10 @@ export function applyCutsToXml(xml: string, cuts: CutRangeSeconds[], newName: st
         if (id) idToKeep.set(id, keepIndex)
       }
     }
-    track[tagOf(track)] = next
+    // Pieces can play out of source order, so put each track's items back in timeline order.
+    const items = next.filter((n) => ITEM_TAGS.has(tagOf(n))).sort((x, y) => getNum(x, 'start') - getNum(y, 'start'))
+    let k = 0
+    track[tagOf(track)] = next.map((n) => (ITEM_TAGS.has(tagOf(n)) ? items[k++] : n))
   }
 
   fixFileDefinitions(tracks, fullDefs)

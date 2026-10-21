@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCuts, cutsToDecisions, defaultReviewSettings, gapSilences, groupLines, mapToSequence, speechUnits, summarise, wordsForClip } from './reviewModel'
+import { buildCuts, cutsToDecisions, defaultReviewSettings, gapSilences, groupLines, mapToSequence, speechUnits, summarise, withoutFillers, wordsForClip } from './reviewModel'
 import type { ReviewWord } from './reviewModel'
 
 const w = (text: string, start: number, end: number, filler = false, segment = '0:0'): ReviewWord => ({ text, start, end, filler, segment })
@@ -95,5 +95,14 @@ describe('buildCuts with AI removals', () => {
 describe('gapSilences', () => {
   it('turns gaps between words into pauses', () => {
     expect(gapSilences([w('c', 3, 3.5), w('a', 0, 1), w('b', 1.1, 2)], 0.3)).toEqual([{ start: 2, end: 3 }])
+  })
+})
+
+describe('withoutFillers', () => {
+  it('cuts filler words out of clip pieces and keeps play order', () => {
+    const words = [w('um', 11, 11.4, true), w('so', 12, 12.2), w('uh', 3, 3.3, true), w('um', 50, 51, true)]
+    expect(withoutFillers([{ start: 10, end: 14 }, { start: 2, end: 4 }], words)).toEqual([
+      { start: 10, end: 11 }, { start: 11.4, end: 14 }, { start: 2, end: 3 }, { start: 3.3, end: 4 },
+    ])
   })
 })

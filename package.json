@@ -11,7 +11,8 @@
     "test": "vitest run",
     "eval": "vitest run src/eval/baseline.eval.test.ts --reporter=verbose",
     "eval:reference": "tsx scripts/analyse-reference.ts",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "eval:selects": "tsx scripts/eval-selects.ts"
   },
   "dependencies": {
     "fast-xml-parser": "^5.9.3",

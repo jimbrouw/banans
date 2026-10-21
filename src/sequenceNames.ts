@@ -3,9 +3,10 @@
 // The run number counts up per source sequence and action, so repeated runs
 // are easy to tell apart and match to the run log. Pure, no Premiere calls.
 
-export type RunAction = 'Auto Cut' | 'Clean-up' | 'Clean-up Markers' | 'Review Markers' | 'Cold Open' | 'Social Cut'
+export type RunAction = 'Auto Cut' | 'Clean-up' | 'Clean-up Markers' | 'Review Markers' | 'Cold Open' | 'Social Cut' | 'Clip'
 
 export const BIN_NAME = 'RoughCut'
+export const CLIPS_BIN = 'Clips'
 const SEP = ' — '
 
 // Names from older builds: "X - AI Rough Cut", "X - Auto Cut 2", "X - RoughCut", "X - Cold Open".

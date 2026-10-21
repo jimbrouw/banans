@@ -168,3 +168,17 @@ export function cutsToDecisions(cuts: ReviewCut[]): EditDecision[] {
     selected: true,
   }))
 }
+
+/** A clip's pieces with filler words (um, uh…) cut out of them, keeping play order. */
+export function withoutFillers(pieces: SilenceRange[], words: ReviewWord[], minPiece = 0.15): SilenceRange[] {
+  const fillers = words.filter((w) => w.filler)
+  return pieces.flatMap((p) => {
+    let parts: SilenceRange[] = [p]
+    for (const f of fillers) {
+      if (f.end <= p.start || f.start >= p.end) continue
+      parts = parts.flatMap((x) => (f.end <= x.start || f.start >= x.end ? [x]
+        : [{ start: x.start, end: f.start }, { start: f.end, end: x.end }].filter((y) => y.end - y.start >= minPiece)))
+    }
+    return parts.map((x) => ({ start: round(x.start), end: round(x.end) }))
+  })
+}

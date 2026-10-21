@@ -15,6 +15,8 @@ import { MulticamPanel } from './panels/MulticamPanel'
 import { EngineStatus } from './panels/EngineStatus'
 import { ReviewPanel } from './panels/ReviewPanel'
 import { SetupPanel } from './panels/SetupPanel'
+import { SelectsPanel } from './panels/SelectsPanel'
+import { Options } from './ui'
 
 import './App.css'
 
@@ -101,7 +103,6 @@ export default function App() {
       const nextDecisions = await analyseTranscript(transcript, settings, markerMappings([...new Set(transcript.map((s) => s.speaker))]))
       if (!nextDecisions.length) throw new Error('Nothing matched the current options. Lower the confidence or the shortest clip length under Options.')
       setDecisions(nextDecisions)
-      setTabStatus((s) => ({ ...s, clips: `${nextDecisions.length}` }))
       setStatus('results')
     } catch (reason) {
       setError(errorMessage(reason))
@@ -152,11 +153,16 @@ export default function App() {
         </div>
         <div {...show('clips')}>
           <div className="tab-body">
-            <AnalysisPanel settings={settings} onPatch={patchSettings} busy={busy} buttonLabel={analyseLabel} error={error} onAnalyse={runAnalysis} hasResults={decisions.length > 0} />
-            {decisions.length > 0 && <div className="block results">
-              <ResultsPanel decisions={decisions} setDecisions={setDecisions} sequenceName={sequence.name} creating={status === 'creating'} created={status === 'created'} onCreateRoughCut={createRoughCut} />
-              <ColdOpenPanel key={`cold-${sequence.id}`} sequenceId={sequence.id} segments={segments} onCreated={setLastCreated} />
-            </div>}
+            <SelectsPanel key={`selects-${sequence.id}`} onCreated={setLastCreated} />
+            <div className="block">
+              <Options label="Review markers" summary="Off. Turn on for the full marker list and cold opens">
+                <AnalysisPanel settings={settings} onPatch={patchSettings} busy={busy} buttonLabel={analyseLabel} error={error} onAnalyse={runAnalysis} hasResults={decisions.length > 0} />
+                {decisions.length > 0 && <div className="block results">
+                  <ResultsPanel decisions={decisions} setDecisions={setDecisions} sequenceName={sequence.name} creating={status === 'creating'} created={status === 'created'} onCreateRoughCut={createRoughCut} />
+                  <ColdOpenPanel key={`cold-${sequence.id}`} sequenceId={sequence.id} segments={segments} onCreated={setLastCreated} />
+                </div>}
+              </Options>
+            </div>
           </div>
         </div>
         <div {...show('setup')}>

@@ -36,7 +36,8 @@ src/
     ReviewPanel.tsx            Clean up tab: pauses, fillers, retakes, Chat Edit, remove cuts
     MulticamPanel.tsx          Multicam tab: 1 cameras, 2 who's on which camera, 3 cut style
     PodcastMode.tsx            MicSpeakersStep: the "Mic tracks" option in Multicam step 2
-    AnalysisPanel.tsx          Clips tab: find clips/chapters (options folded away)
+    SelectsPanel.tsx           Clips tab: five clips worth cutting, build them, YouTube chapters
+    AnalysisPanel.tsx          Clips tab (opt-in "Review markers"): the old marker analysis
     ResultsPanel.tsx           Clips tab: marker list, filters, export, mark on a copy
     ColdOpenPanel.tsx          Clips tab: Cold Open finder (uses the Setup tab's Claude key)
     SetupPanel.tsx             Setup tab: engine status, Claude key, log path, API spike
@@ -97,6 +98,40 @@ npm run build      # Production bundle → dist/
 ## Panel layout
 
 Four tabs, all kept mounted so switching never loses work (the last tab is remembered): **Clean up**, **Multicam**, **Clips**, **Setup**. Each tab has one main action; settings most runs don't need sit under a folded **Options** line that summarises them. Once a tab has results, its "find" button shrinks to a link and the next step (remove cuts, cut to a new sequence, mark on a copy) becomes the main button. The tab bar shows live status (`9 cuts`, `3 cams`, `28`). The Claude key is entered once in Setup.
+
+## Clips tab: selects pass
+
+What a senior podcast clip producer does, instead of a pile of markers: read the whole episode, cut five.
+
+```
+SelectsPanel "Find the best clips"
+  └─ words: Premiere transcript (Whisper fallback) → reviewModel.speechUnits (sentence lines)
+  └─ engine POST /selects → selects.run_selects
+       1 candidates  model reads all lines (chunks of 260) against RUBRIC (the editor's brief +
+                     yt-shorts' picking rules): first/last line ids, an optional hook line pulled
+                     forward from ≤45 s later, type (story/opinion/tip/moment), idea, title, why
+       2 checks      20–60 s, real ids; contiguous lines merge, pauses ≥1.5 s are cut
+       3 signals     liveliness vs the episode's typical level (if the episode audio is one file);
+                     hookscore of the opening line, weighted low (it rated this editor's own
+                     published openings 34–43 "weak") and shown as a tip
+       4 dedupe      overlap >30% of the shorter, or the same idea → keep the better one
+       5 rank        Swiss pairwise rounds (no rematches, rotating sit-out) on a shortlist of 10
+       6 variety     top 5 with each type that has a contender; titles linted (yt-package title.py)
+  └─ "Build N clip sequences" → reviewModel.withoutFillers → xmlCutHost.buildClipsViaXml
+       (xmlCut.applyPiecesToXml keeps pieces in play order, so a pulled-forward hook plays first)
+       → "<seq> — Clip NN (title)" in a Clips bin
+  └─ "Make chapters" → engine POST /chapters → yt chapters boundaries (pauses + vocabulary shift,
+       YouTube's rules) + model retitles, 6–10 → text to paste
+```
+
+- The model only names line ids; all times are computed in code.
+- Review markers are opt-in under "Review markers" in the Clips tab.
+- Tools from Jake Schincariol's YouTube agent skill pack (MIT) live in `engine/roughcut_engine/yt/` (hookscore, title unmodified; chapters adapted). The full skill pack is also installed as Claude Code skills (`~/.claude/skills/yt-*`).
+
+### Checking the picks against real clips
+
+`npm run eval:selects -- --episode eval-input/<ep> --refs "<folder of clip XMLs>" --episode-name "<edit sequence name>" [--provider claude]`
+reads the editor's published clips (FCP XML of each clip sequence; `src/eval/clipReference.ts` maps them to episode time, including pulled-forward hooks), runs the selects pass on `<ep>/transcript.json`, and scores it (`src/eval/selectsEval.ts`): found (pick covers ≥50% of the editor's clip), rank, overlap, edge error, same opening line. Needs Ollama or `ANTHROPIC_API_KEY`. Inputs and results are gitignored (they hold media paths and transcript text). The run log records which clips were kept or dropped on every build.
 
 ## Active sequence
 

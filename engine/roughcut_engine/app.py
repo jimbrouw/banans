@@ -7,7 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .edit import EditError, Unit, ai_edit
+from .edit import EditError, Unit, ai_edit, asker
+from .selects import run_chapters, run_selects
 from .levels import levels
 from .media import MediaError
 from .silences import detect_silences
@@ -45,6 +46,23 @@ class EditRequest(BaseModel):
     api_key: str | None = None  # the editor's own key; used for this request only, never stored or logged
     instruction: str | None = Field(None, max_length=2000)
     prefer_last_take: bool = True
+
+
+class SelectsRequest(BaseModel):
+    units: list[EditUnit]
+    speakers: dict[int, str] = {}
+    provider: Literal["ollama", "claude"] = "ollama"
+    model: str | None = None
+    api_key: str | None = None  # the editor's own key; used for this request only, never stored or logged
+    audio_path: str | None = None  # episode audio, for how lively each passage is
+    count: int = Field(5, ge=1, le=10)
+
+
+class ChaptersRequest(BaseModel):
+    units: list[EditUnit]
+    provider: Literal["ollama", "claude"] = "ollama"
+    model: str | None = None
+    api_key: str | None = None
 
 
 class TranscribeRequest(BaseModel):
@@ -89,5 +107,25 @@ def edit_route(req: EditRequest) -> dict:
     try:
         units = [Unit(u.id, u.start, u.end, u.text) for u in req.units]
         return ai_edit(units, req.provider, req.model, req.api_key, req.instruction, req.prefer_last_take)
+    except EditError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/selects")
+def selects_route(req: SelectsRequest) -> dict:
+    try:
+        model, ask = asker(req.provider, req.model, req.api_key)
+        units = [Unit(u.id, u.start, u.end, u.text) for u in req.units]
+        db = levels(req.audio_path, None, 10)["db"] if req.audio_path else None
+        return {"model": model, **run_selects(units, ask, req.speakers, db, 10, req.count)}
+    except (EditError, MediaError) as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/chapters")
+def chapters_route(req: ChaptersRequest) -> dict:
+    try:
+        model, ask = asker(req.provider, req.model, req.api_key)
+        return {"model": model, **run_chapters([Unit(u.id, u.start, u.end, u.text) for u in req.units], ask)}
     except EditError as e:
         raise HTTPException(400, str(e)) from e
