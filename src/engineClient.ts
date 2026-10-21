@@ -41,3 +41,23 @@ export const detectSilences = (path: string, opts: { noise_db?: number; min_sile
 // First run downloads the model (~1.6 GB) and a long episode takes minutes; results are cached.
 export const transcribeMedia = (path: string, opts: { language?: string } = {}) =>
   call<TranscribeResult>('/transcribe', { path, ...opts }, 60 * 60_000)
+
+export type AiProvider = 'ollama' | 'claude'
+export interface AiEditResult {
+  provider: AiProvider
+  model: string
+  removals: { start: number; end: number; ids: number[]; reason: 'retake' | 'false_start' | 'repeat' | 'off_topic' | 'instruction'; note: string }[]
+  keep_ids: number[]
+}
+
+// Local models on a long episode can take several minutes.
+export const aiEdit = (
+  units: { id: number; start: number; end: number; text: string }[],
+  opts: { provider: AiProvider; apiKey?: string; instruction?: string; preferLastTake: boolean },
+) => call<AiEditResult>('/edit', {
+  units,
+  provider: opts.provider,
+  api_key: opts.apiKey || undefined,
+  instruction: opts.instruction || undefined,
+  prefer_last_take: opts.preferLastTake,
+}, 30 * 60_000)

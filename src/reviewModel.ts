@@ -8,7 +8,12 @@ import type { EditDecision } from './types'
 export interface SourceClip { path: string; start: number; end: number; inPoint: number }
 
 export interface ReviewWord { text: string; start: number; end: number; filler: boolean; segment: string }
-export type CutReason = 'silence' | 'filler'
+export type AiReason = 'retake' | 'false_start' | 'repeat' | 'off_topic' | 'instruction'
+export type CutReason = 'silence' | 'filler' | AiReason
+/** A removal suggested by the AI pass, already in sequence time. */
+export interface AiRemoval { start: number; end: number; reason: AiReason; note: string }
+/** A sentence-sized piece of transcript: what the AI pass reads and cuts by. */
+export interface SpeechUnit { id: number; start: number; end: number; text: string }
 export interface ReviewCut { id: string; start: number; end: number; reasons: CutReason[]; label: string; active: boolean }
 export interface ReviewSettings { minSilence: number; padding: number; cutFillers: boolean }
 
@@ -47,10 +52,15 @@ function subtract(range: SilenceRange, blockers: { start: number; end: number }[
   return pieces
 }
 
-export function buildCuts(words: ReviewWord[], silences: SilenceRange[], settings: ReviewSettings): ReviewCut[] {
+export const aiReasonLabel: Record<AiReason, string> = {
+  retake: 'Retake', false_start: 'False start', repeat: 'Repeat', off_topic: 'Off-topic', instruction: 'Your edit',
+}
+const isAi = (r: CutReason): r is AiReason => r in aiReasonLabel
+
+export function buildCuts(words: ReviewWord[], silences: SilenceRange[], settings: ReviewSettings, ai: AiRemoval[] = []): ReviewCut[] {
   // Never cut through a real word, even if the audio there reads as quiet.
   const spoken = words.filter((w) => !w.filler)
-  const raw: { start: number; end: number; reason: CutReason; text?: string }[] = []
+  const raw: { start: number; end: number; reason: CutReason; text?: string; note?: string }[] = []
 
   for (const s of silences) {
     if (s.end - s.start < settings.minSilence) continue
@@ -61,17 +71,19 @@ export function buildCuts(words: ReviewWord[], silences: SilenceRange[], setting
   if (settings.cutFillers) {
     for (const w of words) if (w.filler) raw.push({ start: w.start, end: w.end, reason: 'filler', text: w.text })
   }
+  for (const r of ai) raw.push({ start: r.start, end: r.end, reason: r.reason, note: r.note })
 
   raw.sort((a, b) => a.start - b.start)
-  const merged: { start: number; end: number; reasons: Set<CutReason>; fillers: string[] }[] = []
+  const merged: { start: number; end: number; reasons: Set<CutReason>; fillers: string[]; notes: string[] }[] = []
   for (const r of raw) {
     const last = merged[merged.length - 1]
     if (last && r.start - last.end <= MERGE_GAP) {
       last.end = Math.max(last.end, r.end)
       last.reasons.add(r.reason)
       if (r.text) last.fillers.push(r.text)
+      if (r.note) last.notes.push(r.note)
     } else {
-      merged.push({ start: r.start, end: r.end, reasons: new Set([r.reason]), fillers: r.text ? [r.text] : [] })
+      merged.push({ start: r.start, end: r.end, reasons: new Set([r.reason]), fillers: r.text ? [r.text] : [], notes: r.note ? [r.note] : [] })
     }
   }
 
@@ -80,10 +92,36 @@ export function buildCuts(words: ReviewWord[], silences: SilenceRange[], setting
     .map((m, i) => {
       const secs = (m.end - m.start).toFixed(1)
       const fillers = m.fillers.map((f) => `"${f.replace(/[^\w']/g, '')}"`).join(' ')
-      const label = m.reasons.has('filler') && m.reasons.has('silence') ? `Pause + filler ${fillers} · ${secs}s`
+      const aiReason = [...m.reasons].find(isAi)
+      const label = aiReason ? `${aiReasonLabel[aiReason]} · ${secs}s${m.notes[0] ? ` · ${m.notes[0]}` : ''}`
+        : m.reasons.has('filler') && m.reasons.has('silence') ? `Pause + filler ${fillers} · ${secs}s`
         : m.reasons.has('filler') ? `Filler ${fillers}` : `Pause ${secs}s`
       return { id: `cut-${i}`, start: round(m.start), end: round(m.end), reasons: [...m.reasons], label, active: true }
     })
+}
+
+/**
+ * Split words into sentence-sized units for the AI pass: a new unit at each
+ * whisper segment, after sentence-ending punctuation, or after a long gap.
+ * Small units let the AI cut a false start without taking the whole segment.
+ */
+export function speechUnits(words: ReviewWord[], gap = 0.8): SpeechUnit[] {
+  const units: SpeechUnit[] = []
+  let current: ReviewWord[] = []
+  const flush = () => {
+    if (!current.length) return
+    units.push({ id: units.length, start: current[0].start, end: current[current.length - 1].end, text: current.map((w) => w.text).join(' ') })
+    current = []
+  }
+  const sorted = [...words].sort((a, b) => a.start - b.start)
+  sorted.forEach((w, i) => {
+    const prev = sorted[i - 1]
+    if (prev && (prev.segment !== w.segment || w.start - prev.end > gap)) flush()
+    current.push(w)
+    if (/[.?!]["')\]]*$/.test(w.text)) flush()
+  })
+  flush()
+  return units
 }
 
 /** Group words into transcript lines (one per whisper segment) for display. */

@@ -20,15 +20,22 @@ export const demoWords: EngineWord[] = [
   ...line(1, 4.1, 'So um today we are going to talk about, uh, editing faster.', ['um', 'uh']),
   ...line(2, 10.2, 'Most of your time goes into the first pass.'),
   ...line(3, 14.9, 'Uh, cutting pauses, filler words and retakes.', ['uh']),
-  ...line(4, 20.6, 'Let me show you how to skip all of that.'),
-  ...line(5, 25.3, 'Hmm, okay, let us get started.', ['hmm']),
+  ...line(4, 17.6, 'Let me show you how to, no wait.'),
+  ...line(5, 20.6, 'Let me show you how to skip all of that.'),
+  ...line(6, 25.3, 'Hmm, okay, let us get started.', ['hmm']),
 ]
 
 export const demoSilences: SilenceRange[] = [
   { start: 2.75, end: 4.05 },
   { start: 8.4, end: 10.15 },
   { start: 13.1, end: 14.85 },
-  { start: 17.6, end: 20.5 },
   { start: 23.95, end: 25.25 },
   { start: 27.6, end: 30 },
 ]
+
+/** What the AI pass returns for the demo take: the abandoned "Let me show you how to, no wait." */
+export function demoAiRemovals(units: { id: number; start: number; end: number; text: string }[]) {
+  return units
+    .filter((u) => u.text.startsWith('Let me show you how to, no wait'))
+    .map((u) => ({ start: u.start, end: u.end, reason: 'retake' as const, note: 'abandoned first attempt; kept the next line' }))
+}

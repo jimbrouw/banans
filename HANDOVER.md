@@ -120,6 +120,25 @@ ReviewPanel "Transcribe & find pauses"
   └─ "Or mark them only" → cutsToDecisions → premiere.createRoughCut (markers on a clone)
 ```
 
+### AI pass and Chat Edit (ROADMAP Phase 4)
+
+```
+ReviewPanel "Find retakes & repeats" / Chat Edit box
+  └─ reviewModel.speechUnits(words)   sentence-sized lines: split at . ? !, segment change, or a gap > 0.8s
+  └─ engineClient.aiEdit(units, {provider, apiKey, instruction, preferLastTake})
+       └─ engine POST /edit → edit.ai_edit
+            ├─ prompt: numbered lines "[id] mm:ss text" (+ "Editor instruction: …")
+            ├─ Ollama /api/chat (JSON-schema format) or Claude (anthropic SDK, structured output)
+            └─ returns removals (line-id runs → time ranges, reason, note) + keep_ids
+  └─ buildCuts(words, silences, settings, aiRemovals)   AI cuts merge with adjacent pauses
+```
+
+- **Find retakes** replaces the previous AI cuts. **Chat Edit** adds its cuts on top; lines it says to keep drop any AI cut over them and switch off pause/filler cuts inside them.
+- AI cuts show as cyan chips ("Retake · 3.0s · abandoned first attempt"), with their words struck through; click either to keep.
+- The Anthropic key is shared with the Cold Open Finder (`localStorage` `roughcut.anthropicKey`).
+- Browser demo without the engine returns a canned retake (`reviewDemo.demoAiRemovals`).
+- **Not yet measured:** cut quality with a real local model. Verified so far: tests with mocked providers, the real `anthropic` SDK against a mock transport, and the full panel → engine → Ollama-protocol path against a stub server.
+
 ### Removing cuts via FCP XML (`xmlCut.ts`)
 
 ```

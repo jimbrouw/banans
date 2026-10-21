@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCuts, cutsToDecisions, defaultReviewSettings, groupLines, mapToSequence, summarise, wordsForClip } from './reviewModel'
+import { buildCuts, cutsToDecisions, defaultReviewSettings, groupLines, mapToSequence, speechUnits, summarise, wordsForClip } from './reviewModel'
 import type { ReviewWord } from './reviewModel'
 
 const w = (text: string, start: number, end: number, filler = false, segment = '0:0'): ReviewWord => ({ text, start, end, filler, segment })
@@ -62,5 +62,32 @@ describe('groupLines / summarise / cutsToDecisions', () => {
     cuts[1].active = false
     expect(summarise(cuts)).toEqual({ count: 1, seconds: 1 })
     expect(cutsToDecisions(cuts)).toEqual([{ id: 'cut-0', start: 1, end: 2, type: 'suggested_trim', label: 'Pause 1.0s', detail: 'RoughCut review: silence', confidence: 1, selected: true }])
+  })
+})
+
+describe('speechUnits', () => {
+  it('splits at sentence ends, segment changes and long gaps', () => {
+    const words = [
+      w('So', 0, 0.2), w('the,', 0.3, 0.5), w('okay.', 0.6, 0.9),
+      w('Today', 1.0, 1.3), w('we', 1.4, 1.5), w('talk', 2.6, 2.9),
+      w('Next', 3.0, 3.2, false, '0:1'), w('one?"', 3.3, 3.6, false, '0:1'),
+    ]
+    expect(speechUnits(words)).toEqual([
+      { id: 0, start: 0, end: 0.9, text: 'So the, okay.' },
+      { id: 1, start: 1.0, end: 1.5, text: 'Today we' },
+      { id: 2, start: 2.6, end: 2.9, text: 'talk' },
+      { id: 3, start: 3.0, end: 3.6, text: 'Next one?"' },
+    ])
+  })
+})
+
+describe('buildCuts with AI removals', () => {
+  it('labels AI cuts with reason and note, and merges them with an adjacent pause', () => {
+    const cuts = buildCuts([w('Let', 10, 10.2), w('me,', 10.3, 10.6)], [{ start: 10.6, end: 11.5 }], noPad, [
+      { start: 10, end: 10.6, reason: 'false_start', note: 'restarted; kept line 4' },
+    ])
+    expect(cuts).toHaveLength(1)
+    expect(cuts[0]).toMatchObject({ start: 10, end: 11.5, label: 'False start · 1.5s · restarted; kept line 4' })
+    expect(cuts[0].reasons.sort()).toEqual(['false_start', 'silence'])
   })
 })

@@ -311,11 +311,25 @@ select:hover { border-color: #465153; }
 .review-line { display: flex; gap: 10px; padding: 7px 4px; align-items: baseline; }
 .review-line p { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--text); }
 .review-time { flex: none; font-size: 10px; color: var(--cyan); font-variant-numeric: tabular-nums; cursor: pointer; }
-.review-word.filler { cursor: pointer; border-radius: 3px; padding: 0 2px; }
-.review-word.filler.cut { color: var(--amber); text-decoration: line-through; background-color: rgba(237, 122, 19, .12); }
-.review-word.filler.kept { color: var(--text); text-decoration: underline dotted var(--dim); }
+
+
+
 .review-pause { display: flex; align-items: center; gap: 6px; margin: 2px 0 2px 58px; padding: 3px 9px; width: fit-content; font-size: 10.5px; border-radius: 999px; cursor: pointer; border: 1px solid var(--line); }
 .review-pause.cut { color: var(--amber); border-color: rgba(237, 122, 19, .45); background-color: rgba(237, 122, 19, .08); text-decoration: line-through; }
 .review-pause.kept { color: var(--dim); }
 .review-pause-state { text-decoration: none; display: inline-block; margin-left: 4px; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; opacity: .8; }
 .review-note { margin: 8px 0 0; }
+
+/* AI pass */
+.ai-pass { margin-top: 16px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 8px; background-color: var(--surface); }
+.ai-pass-head { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; color: var(--cyan); }
+.ai-pass-head strong { color: var(--text); font-size: 13px; }
+.ai-pass-head .hint { margin-left: auto; }
+.ai-run { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.chat-edit { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background-color: var(--surface-low); color: var(--muted); }
+.chat-edit input { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text); font: inherit; font-size: 12px; outline: none; }
+.ai-note { margin: 8px 0 0; }
+.review-word.removable { cursor: pointer; border-radius: 3px; padding: 0 2px; }
+.review-word.removable.cut { color: var(--amber); text-decoration: line-through; background-color: rgba(237, 122, 19, .12); }
+.review-word.removable.kept { color: var(--text); text-decoration: underline dotted var(--dim); }
+.review-pause.ai.cut { color: var(--cyan); border-color: rgba(82, 203, 199, .45); background-color: rgba(82, 203, 199, .08); }
