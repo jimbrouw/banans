@@ -57,7 +57,7 @@ The panel sends sentence-sized transcript lines. The model returns **line ids** 
   ollama pull qwen3:8b
   ```
   Override the model with `RC_OLLAMA_MODEL` and the address with `RC_OLLAMA_URL`. Requests use Ollama's JSON-schema `format`, `think: false` and temperature 0.
-- **Claude (optional, your key).** Uses the official `anthropic` SDK with structured JSON output. To keep cost down it only accepts `claude-haiku-5-5` (effort high, the default) or `claude-sonnet-5-5` (effort low), picked in the Setup tab; any other model, Opus included, is refused, and there are no server-side fallbacks. The key is sent per request from the panel and is never stored or logged by the engine.
+- **Claude (optional, your key).** Uses the official `anthropic` SDK with structured JSON output. To keep cost down it only accepts `claude-sonnet-5-5` (effort low, the default) or `claude-haiku-5-5` (effort high), picked in the Setup tab; any other model, Opus included, is refused, and there are no server-side fallbacks. The key is sent per request from the panel and is never stored or logged by the engine.
 - Long transcripts go in chunks of 250 lines with 15 lines of overlap.
 
 ## Test

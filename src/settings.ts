@@ -8,14 +8,14 @@ export const SETTINGS = {
   claudeModel: 'roughcut.claudeModel',
 } as const
 
-// Cost: Claude Haiku at high effort or Sonnet at low effort. Never Opus.
+// Cost: Claude Sonnet at low effort (the default: it found the editor's Short in the eval) or Haiku at high effort. Never Opus.
 export const CLAUDE_MODELS = [
+  { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5 (best picks, about 35¢ an episode)', effort: 'low' },
   { id: 'claude-haiku-5-5', label: 'Haiku 5.5 (cheapest, about 3¢ an episode)', effort: 'high' },
-  { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5 (stronger, about 35¢ an episode)', effort: 'low' },
 ] as const
 export type ClaudeModel = (typeof CLAUDE_MODELS)[number]
 
-/** The chosen Claude model, falling back to Haiku for anything not on the list. */
+/** The chosen Claude model, falling back to Sonnet for anything not on the list. */
 export function claudeModel(): ClaudeModel {
   const id = readSetting(SETTINGS.claudeModel, CLAUDE_MODELS[0].id)
   return CLAUDE_MODELS.find((m) => m.id === id) ?? CLAUDE_MODELS[0]

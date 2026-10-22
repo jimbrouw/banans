@@ -19,7 +19,7 @@ OLLAMA_URL = os.environ.get("RC_OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("RC_OLLAMA_MODEL", "qwen3:8b")
 # Cost: only these two, each at the effort that keeps it cheap. Never Opus.
 CLAUDE_EFFORT = {"claude-haiku-5-5": "high", "claude-sonnet-5-5": "low"}
-CLAUDE_MODEL = "claude-haiku-5-5"
+CLAUDE_MODEL = "claude-sonnet-5-5"
 
 CHUNK_LINES = 250
 CHUNK_OVERLAP = 15

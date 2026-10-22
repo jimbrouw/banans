@@ -22,8 +22,8 @@ const episodeDir = arg('episode', 'eval-input/kate-courtney')!
 const refsDir = arg('refs', 'xlr social clips')!
 const episodeName = arg('episode-name', 'Kate Courtney v1')!
 const provider = arg('provider', 'ollama')!
-// Claude: Haiku 5.5 (high effort) by default, or --model claude-sonnet-5-5 (low effort). Never Opus.
-const model = provider === 'claude' ? arg('model', 'claude-haiku-5-5') : undefined
+// Claude: Sonnet 5.5 (low effort) by default, or --model claude-haiku-5-5 (high effort). Never Opus.
+const model = provider === 'claude' ? arg('model', 'claude-sonnet-5-5') : undefined
 const audio = arg('audio')
 const mmss = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`
 
