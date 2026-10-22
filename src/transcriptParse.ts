@@ -74,6 +74,61 @@ export function normalizeTranscriptJson(json: string, timelineOffset = 0): Trans
   })
 }
 
+export interface TranscriptWord { text: string; start: number; end: number; speaker: string; filler: boolean; segment: number }
+
+// um/uh-style fillers only; "like"/"you know" depend on context (the AI pass handles those).
+const FILLERS = new Set(['um', 'umm', 'uh', 'uhh', 'uhm', 'er', 'erm', 'ah', 'ahh', 'hmm', 'hm', 'mm', 'mmm', 'mhm'])
+
+/**
+ * Word-level view of a Premiere transcript JSON (Transcript.exportToJSON).
+ * Punctuation tokens are attached to the word before them, so sentence ends
+ * ("world.") survive for sentence splitting. Times are shifted by timelineOffset.
+ */
+export function transcriptWordsFromJson(json: string, timelineOffset = 0): TranscriptWord[] {
+  const root = asRecord(JSON.parse(json) as unknown)
+  if (!root) return []
+  const candidates = [root.segments, root.transcript, root.items].find(Array.isArray)
+  if (!Array.isArray(candidates)) return []
+  const speakerNames = new Map<string, string>()
+  if (Array.isArray(root.speakers)) {
+    for (const entry of root.speakers) {
+      const speaker = asRecord(entry)
+      const id = speaker && stringField(speaker, 'id', 'guid', 'uuid')
+      const name = speaker && stringField(speaker, 'name', 'label', 'displayName')
+      if (id && name) speakerNames.set(id, name)
+    }
+  }
+
+  const out: TranscriptWord[] = []
+  candidates.forEach((candidate, segment) => {
+    const seg = asRecord(candidate)
+    if (!seg || !Array.isArray(seg.words)) return
+    const ref = stringField(seg, 'speaker', 'speakerName', 'speaker_label') ?? 'Unknown'
+    const speaker = speakerNames.get(ref) ?? ref
+    for (const raw of seg.words) {
+      const word = asRecord(raw)
+      const text = word && stringField(word, 'text', 'word')?.trim()
+      const start = word && numberField(word, 'start', 'startTime', 'start_time')
+      if (!word || !text || start === undefined) continue
+      const end = numberField(word, 'end', 'endTime', 'end_time') ?? start + (numberField(word, 'duration') ?? 0)
+      const last = out[out.length - 1]
+      if ((word.type === 'punctuation' || /^[.,!?;:)\]}%'"…-]+$/.test(text)) && last && last.segment === segment) {
+        last.text += text
+        continue
+      }
+      out.push({
+        text,
+        start: Math.max(0, timelineOffset + start),
+        end: Math.max(0, timelineOffset + end),
+        speaker,
+        filler: FILLERS.has(text.toLowerCase().replace(/[^a-z]/g, '')),
+        segment,
+      })
+    }
+  })
+  return out
+}
+
 // Premiere exports sequence timecodes either as float seconds, SRT-style
 // HH:MM:SS,mmm, or HH:MM:SS:FF. Frame-based codes need a frame rate, so we
 // approximate with the supplied fps (timeline markers are review hints, not cuts).

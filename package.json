@@ -11,9 +11,11 @@
     "test": "vitest run",
     "eval": "vitest run src/eval/baseline.eval.test.ts --reporter=verbose",
     "eval:reference": "tsx scripts/analyse-reference.ts",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "eval:selects": "tsx scripts/eval-selects.ts"
   },
   "dependencies": {
+    "fast-xml-parser": "^5.9.3",
     "lucide-react": "^1.21.0",
     "react": "^16.14.0",
     "react-dom": "^16.14.0"
@@ -28,7 +30,6 @@
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
-    "fast-xml-parser": "^5.9.3",
     "globals": "^17.6.0",
     "playwright": "^1.61.0",
     "tsx": "^4.22.4",

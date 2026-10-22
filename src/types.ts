@@ -1,6 +1,7 @@
 export type { CameraSource, CutInterval, CutPoint, DetectedSources } from './cutEngine'
 import type { CutPoint, DetectedSources } from './cutEngine'
 import type { ColdOpenShot } from './coldOpenFinder'
+import type { RunAction } from './sequenceNames'
 
 export type MarkerType = 'social_clip' | 'chapter' | 'suggested_trim' | 'warning' | 'strong_quote' | 'camera_switch' | 'social_hook' | 'audiogram'
 export type Platform = 'shorts' | 'reels' | 'tiktok' | 'stories' | 'audiogram'
@@ -54,12 +55,15 @@ export interface SequenceInfo {
 
 export interface PremiereAdapter {
   getActiveSequence(): Promise<SequenceInfo>
+  listSequences(): Promise<{ id: string; name: string }[]>
+  activateSequence(id: string): Promise<void>
+  watchActiveSequence(onChange: () => void): () => void
   getTranscript(sequenceId: string): Promise<TranscriptSegment[]>
   importTranscriptFile(): Promise<TranscriptSegment[]>
   addMarkers(sequenceId: string, decisions: EditDecision[]): Promise<void>
-  createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[]): Promise<string>
+  createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[], run?: { action: RunAction; detail: string }): Promise<string>
   detectSources(): Promise<DetectedSources>
-  applyCutMap(sequenceId: string, cuts: CutPoint[], det: DetectedSources, endFrame: number): Promise<string>
+  applyCutMap(sequenceId: string, cuts: CutPoint[], det: DetectedSources, endFrame: number, detail?: string): Promise<string>
   assembleSocialSequence(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[], det: DetectedSources): Promise<string>
   assembleColdOpenClip(sequenceId: string, startSeconds: number, endSeconds: number, shots?: ColdOpenShot[]): Promise<string>
 }

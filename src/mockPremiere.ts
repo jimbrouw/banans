@@ -1,6 +1,8 @@
 import { parseTranscriptFile } from './transcriptParse'
 import type { CutPoint, DetectedSources } from './cutEngine'
 import type { EditDecision, PremiereAdapter, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
+import { nextSequenceName, timeRange } from './sequenceNames'
+import type { RunAction } from './sequenceNames'
 
 export const sequence: SequenceInfo = {
   id: 'seq-042',
@@ -32,7 +34,21 @@ const pickBrowserFile = () => new Promise<File | undefined>((resolve) => {
 })
 
 export class MockPremiereAdapter implements PremiereAdapter {
-  async getActiveSequence() { await wait(100); return sequence }
+  // Demo project: the episode plus anything 'created' this session, so names count up
+  // and the sequence picker behaves like it does in Premiere.
+  private sequences: SequenceInfo[] = [sequence, { ...sequence, id: 'seq-043', name: 'Episode 043 - Solo Talk' }]
+  private activeId = sequence.id
+  private watchers = new Set<() => void>()
+  private create(action: RunAction, detail: string) {
+    const active = this.sequences.find((s) => s.id === this.activeId) ?? sequence
+    const name = nextSequenceName(active.name, action, detail, this.sequences.map((s) => s.name))
+    this.sequences.push({ ...active, id: `seq-${this.sequences.length + 100}`, name })
+    return name
+  }
+  async getActiveSequence() { await wait(100); return this.sequences.find((s) => s.id === this.activeId) ?? sequence }
+  async listSequences() { return this.sequences.map(({ id, name }) => ({ id, name })) }
+  async activateSequence(id: string) { this.activeId = id; this.watchers.forEach((w) => w()) }
+  watchActiveSequence(onChange: () => void) { this.watchers.add(onChange); return () => { this.watchers.delete(onChange) } }
   async getTranscript(sequenceId: string) { void sequenceId; await wait(180); return transcript }
   async importTranscriptFile() {
     const file = await pickBrowserFile()
@@ -42,10 +58,10 @@ export class MockPremiereAdapter implements PremiereAdapter {
     return segments.sort((a, b) => a.start - b.start)
   }
   async addMarkers(sequenceId: string, decisions: EditDecision[]) { void sequenceId; void decisions; await wait(550) }
-  async createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[]) {
-    void sequenceId; void decisions; void mappings
+  async createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[], run?: { action: RunAction; detail: string }) {
+    void sequenceId; void mappings
     await wait(900)
-    return 'Episode 042 - Guest Interview - AI Rough Cut'
+    return this.create(run?.action ?? 'Review Markers', run?.detail ?? `${decisions.length} markers`)
   }
   async detectSources(): Promise<DetectedSources> {
     await wait(200)
@@ -62,20 +78,20 @@ export class MockPremiereAdapter implements PremiereAdapter {
       frameRate: 29.97,
     }
   }
-  async applyCutMap(sequenceId: string, cuts: CutPoint[], det: DetectedSources, endFrame: number) {
+  async applyCutMap(sequenceId: string, cuts: CutPoint[], det: DetectedSources, endFrame: number, detail = '') {
     void sequenceId; void cuts; void det; void endFrame
     await wait(500)
-    return 'Episode 042 - Guest Interview - Auto Cut'
+    return this.create('Auto Cut', detail)
   }
   async assembleSocialSequence(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[], det: DetectedSources) {
-    void sequenceId; void decisions; void mappings; void det
+    void sequenceId; void mappings; void det
     await wait(500)
-    return 'Episode 042 - Guest Interview - Cold Open'
+    return this.create('Social Cut', `${decisions.length} clips`)
   }
   async assembleColdOpenClip(sequenceId: string, startSeconds: number, endSeconds: number, shots?: unknown) {
-    void sequenceId; void startSeconds; void endSeconds; void shots
+    void sequenceId; void shots
     await wait(500)
-    return 'Episode 042 - Guest Interview - Cold Open'
+    return this.create('Cold Open', timeRange(startSeconds, endSeconds))
   }
 }
 

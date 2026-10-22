@@ -15,25 +15,57 @@
 // Probe C: MOGRT insert from a local path.
 //   - Does insertMogrtFromPath exist at runtime and place a graphic?
 //   - Non-destructive: we clone the sequence and insert on the clone.
+//
+// Probe D: Ripple delete.
+//   - Does SequenceEditor.createRemoveItemsAction(selection, ripple=true)
+//     close the gap? Gates real silence / filler cutting (Phase 3, option a).
+//
+// Probe E: FCP XML import.
+//   - Does project.importFiles() accept an .xml and create a sequence?
+//     Gates Phase 3, option b (build the cut as XML, import it).
+//     Leaves a "RoughCut XML Probe" sequence in the project — delete it after.
+//
+// Probe F: Media file path.
+//   - Can we read the source file path of a timeline clip? The local engine
+//     (Phase 1) needs it to transcribe / detect silences on the real audio.
 
-import type { premierepro, VideoClipTrackItem } from '@adobe/premierepro'
+import type { premierepro, TrackItemSelection, VideoClipTrackItem } from '@adobe/premierepro'
 import { getRuntimeRequire } from './hostRuntime'
 
-export interface Phase0Results {
-  probeA: { ok: boolean; detail: string }
-  probeB: { ok: boolean; detail: string }
-  probeC: { ok: boolean; detail: string }
+export type ProbeKey = 'probeA' | 'probeB' | 'probeC' | 'probeD' | 'probeE' | 'probeF'
+export type Phase0Results = Record<ProbeKey, { ok: boolean; detail: string }>
+
+export const probeLabels: Record<ProbeKey, string> = {
+  probeA: 'Scale keyframing',
+  probeB: 'Audio access',
+  probeC: 'MOGRT',
+  probeD: 'Ripple delete',
+  probeE: 'FCP XML import',
+  probeF: 'Media file path',
 }
+
+export function allProbes(ok: boolean, detail: string): Phase0Results {
+  const keys = Object.keys(probeLabels) as ProbeKey[]
+  return Object.fromEntries(keys.map((k) => [k, { ok, detail }])) as Phase0Results
+}
+
+const errorDetail = (e: unknown) => `Threw: ${e instanceof Error ? e.message : String(e)}`
+
+const PROBE_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="4">
+  <sequence>
+    <name>RoughCut XML Probe</name>
+    <duration>250</duration>
+    <rate><timebase>25</timebase><ntsc>FALSE</ntsc></rate>
+    <media><video><track/></video><audio><track/></audio></media>
+  </sequence>
+</xmeml>
+`
 
 export async function runColdOpenSpike(): Promise<Phase0Results> {
   const runtimeRequire = getRuntimeRequire()
-  if (!runtimeRequire) {
-    return {
-      probeA: { ok: false, detail: 'Not inside Premiere — skipped.' },
-      probeB: { ok: false, detail: 'Not inside Premiere — skipped.' },
-      probeC: { ok: false, detail: 'Not inside Premiere — skipped.' },
-    }
-  }
+  if (!runtimeRequire) return allProbes(false, 'Not inside Premiere — skipped.')
 
   const ppro = runtimeRequire('premierepro') as premierepro
   const project = await ppro.Project.getActiveProject()
@@ -196,5 +228,73 @@ export async function runColdOpenSpike(): Promise<Phase0Results> {
     probeC = { ok: false, detail: `Threw: ${e instanceof Error ? e.message : String(e)}` }
   }
 
-  return { probeA, probeB, probeC }
+  // ── Probe F: Media file path (read-only, runs before D deletes the clip) ──
+  let probeF: Phase0Results['probeF']
+  try {
+    const projectItem = await videoItem.getProjectItem()
+    const clipItem = ppro.ClipProjectItem.cast(projectItem)
+    const path = await clipItem.getMediaFilePath()
+    probeF = path
+      ? { ok: true, detail: `V1 clip media: ${path}` }
+      : { ok: false, detail: 'getMediaFilePath returned an empty string.' }
+  } catch (e) {
+    probeF = { ok: false, detail: errorDetail(e) }
+  }
+
+  // ── Probe D: Ripple delete ────────────────────────────────────────────────
+  let probeD: Phase0Results['probeD']
+  try {
+    const items = await cloneTrack0.getTrackItems(ppro.Constants.TrackItemType.CLIP, false)
+    if (items.length < 2) {
+      probeD = { ok: false, detail: 'Need at least 2 clips on V1 to see whether the gap closes. Blade V1 once and re-run.' }
+    } else {
+      const target = items[0] as VideoClipTrackItem
+      const nextBefore = (await items[1].getStartTime()).seconds
+      const targetStart = (await target.getStartTime()).seconds
+      let selection: TrackItemSelection | null = null
+      ppro.TrackItemSelection.createEmptySelection((s) => { s.addItem(target); selection = s })
+      if (!selection) throw new Error('createEmptySelection did not return a selection.')
+      const editor = await ppro.SequenceEditor.getEditor(clone)
+      let removeOk = false
+      project.lockedAccess(() => {
+        removeOk = project.executeTransaction(
+          (c) => c.addAction(editor.createRemoveItemsAction(selection!, true, ppro.Constants.MediaType.ANY)),
+          'Probe D: ripple delete',
+        )
+      })
+      const after = await (await clone.getVideoTrack(0)).getTrackItems(ppro.Constants.TrackItemType.CLIP, false)
+      const nextAfter = after.length ? (await after[0].getStartTime()).seconds : NaN
+      const closed = Math.abs(nextAfter - targetStart) < 0.05
+      probeD = {
+        ok: removeOk && closed,
+        detail: `tx ${removeOk ? 'accepted' : 'rejected'}. Next clip start ${nextBefore.toFixed(2)}s → ${nextAfter.toFixed(2)}s (gap ${closed ? 'closed' : 'NOT closed'}). V1 items ${items.length} → ${after.length}.`,
+      }
+    }
+  } catch (e) {
+    probeD = { ok: false, detail: errorDetail(e) }
+  }
+
+  // ── Probe E: FCP XML import ───────────────────────────────────────────────
+  let probeE: Phase0Results['probeE']
+  try {
+    const uxp = runtimeRequire('uxp') as {
+      storage: { localFileSystem: { getTemporaryFolder(): Promise<{
+        createFile(name: string, opts: { overwrite: boolean }): Promise<{ write(data: string): Promise<unknown>; nativePath: string }>
+      }> } }
+    }
+    const tmp = await uxp.storage.localFileSystem.getTemporaryFolder()
+    const file = await tmp.createFile('roughcut-xml-probe.xml', { overwrite: true })
+    await file.write(PROBE_XML)
+    const before = new Set((await project.getSequences()).map(s => s.guid.toString()))
+    const imported = await project.importFiles([file.nativePath], true)
+    const added = (await project.getSequences()).filter(s => !before.has(s.guid.toString()))
+    probeE = {
+      ok: imported && added.length > 0,
+      detail: `importFiles → ${imported}. New sequences: ${added.length ? added.map(s => `"${s.name}"`).join(', ') : 'none'}. File: ${file.nativePath}`,
+    }
+  } catch (e) {
+    probeE = { ok: false, detail: errorDetail(e) }
+  }
+
+  return { probeA, probeB, probeC, probeD, probeE, probeF }
 }

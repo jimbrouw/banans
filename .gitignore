@@ -27,3 +27,7 @@ FCP Translation Results*.txt
 *.njsproj
 *.sln
 *.sw?
+
+# Reference edits for the clips eval (contain local media paths)
+xlr social clips/
+eval-input/

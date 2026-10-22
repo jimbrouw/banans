@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeTranscriptJson, parseTranscriptFile } from './transcriptParse'
+import { normalizeTranscriptJson, parseTranscriptFile, transcriptWordsFromJson } from './transcriptParse'
 
 describe('normalizeTranscriptJson speaker resolution', () => {
   it('resolves speaker UUID references to speaker names', () => {
@@ -46,5 +46,36 @@ describe('parseTranscriptFile', () => {
     const json = JSON.stringify({ speakers: [{ id: 's1', name: 'Guest' }], segments: [{ speaker: 's1', start: 0, end: 1, text: 'Yes' }] })
     const result = parseTranscriptFile(json, 'sequence.prtranscript')
     expect(result[0]).toMatchObject({ speaker: 'Guest', text: 'Yes' })
+  })
+})
+
+describe('transcriptWordsFromJson', () => {
+  const json = JSON.stringify({
+    speakers: [{ id: 's1', name: 'Speaker 1' }, { id: 's2', name: 'Speaker 2' }],
+    segments: [
+      { speaker: 's1', words: [
+        { text: 'Um', start: 1, duration: 0.3, type: 'word' },
+        { text: ',', start: 1.3, duration: 0, type: 'punctuation' },
+        { text: 'hello', start: 1.5, duration: 0.4, type: 'word' },
+        { text: '.', start: 1.9, duration: 0, type: 'punctuation' },
+      ] },
+      { speaker: 's2', words: [
+        { text: 'Hi', start: 3, end: 3.2 },
+        { text: 'there', start: 3.3, duration: 0.3 },
+      ] },
+    ],
+  })
+
+  it('returns words with speaker names, offset times and punctuation attached', () => {
+    expect(transcriptWordsFromJson(json, 10)).toEqual([
+      { text: 'Um,', start: 11, end: 11.3, speaker: 'Speaker 1', filler: true, segment: 0 },
+      { text: 'hello.', start: 11.5, end: 11.9, speaker: 'Speaker 1', filler: false, segment: 0 },
+      { text: 'Hi', start: 13, end: 13.2, speaker: 'Speaker 2', filler: false, segment: 1 },
+      { text: 'there', start: 13.3, end: 13.6, speaker: 'Speaker 2', filler: false, segment: 1 },
+    ])
+  })
+
+  it('returns nothing for segment-only transcripts', () => {
+    expect(transcriptWordsFromJson(JSON.stringify({ segments: [{ start: 0, end: 1, text: 'Hi' }] }))).toEqual([])
   })
 })

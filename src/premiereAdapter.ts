@@ -17,13 +17,17 @@ import {
   buildDetectionFingerprint,
   classifyTrackForDetection,
   normalizeCutMap,
+  selectTimelineSegmentsForIntervals,
   selectOutputTrack,
   validateDetectedSources,
 } from './cutEngine'
-import type { CameraSource, CutInterval, CutPoint, DetectedSources } from './cutEngine'
+import type { CameraSource, CutInterval, CutPoint, DetectedSources, TimelineSegment } from './cutEngine'
 import { shotsToEnergyResetCuts } from './coldOpenAssembler'
 import type { ColdOpenShot } from './coldOpenFinder'
 import type { EditDecision, PremiereAdapter, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
+import { nextSequenceName, timeRange } from './sequenceNames'
+import type { RunAction } from './sequenceNames'
+import { fileInRoughCutBin } from './projectBin'
 
 export { normalizeTranscriptJson }
 
@@ -50,6 +54,32 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const sequence = await project.getActiveSequence()
     if (!sequence) throw new Error('Open a sequence in the Timeline before using RoughCut.')
     return { project, sequence }
+  }
+
+  async listSequences(): Promise<{ id: string; name: string }[]> {
+    const project = await this.ppro.Project.getActiveProject()
+    if (!project) return []
+    return (await project.getSequences())
+      .map((s) => ({ id: s.guid.toString(), name: s.name }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+  }
+
+  /** Open a sequence in the Timeline, making it Premiere's active sequence. */
+  async activateSequence(id: string): Promise<void> {
+    const project = await this.ppro.Project.getActiveProject()
+    if (!project) throw new Error('Open a Premiere project before using RoughCut.')
+    if (!await project.setActiveSequence(await this.findSequenceByGuid(project, id))) throw new Error('Premiere could not open that sequence.')
+  }
+
+  /** Call back whenever Premiere activates a sequence. Returns a function that stops listening. */
+  watchActiveSequence(onChange: () => void): () => void {
+    try {
+      const event = this.ppro.Constants.SequenceEvent.ACTIVATED
+      this.ppro.EventManager.addGlobalEventListener(event, onChange)
+      return () => { try { this.ppro.EventManager.removeGlobalEventListener(event, onChange) } catch { /* already gone */ } }
+    } catch {
+      return () => {} // event not available in this Premiere build; the panel's polling still catches switches
+    }
   }
 
   async getActiveSequence(): Promise<SequenceInfo> {
@@ -157,7 +187,17 @@ class UxpPremiereAdapter implements PremiereAdapter {
     }
   }
 
-  async createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[]): Promise<string> {
+  /** Give a generated sequence its numbered name and file it in the RoughCut bin. */
+  private async nameGenerated(project: Project, item: ProjectItem, sourceName: string, action: RunAction, detail: string): Promise<string> {
+    const name = nextSequenceName(sourceName, action, detail, (await project.getSequences()).map((s) => s.name))
+    if (!this.tx(project, (c) => c.addAction(item.createSetNameAction(name)), `Name ${action} sequence`)) {
+      throw new Error('Premiere created the sequence but could not rename it.')
+    }
+    await fileInRoughCutBin(this.ppro, project, item)
+    return name
+  }
+
+  async createRoughCut(sequenceId: string, decisions: EditDecision[], mappings: SpeakerMapping[], run?: { action: RunAction; detail: string }): Promise<string> {
     void mappings
     void sequenceId
     const { project, sequence } = await this.context()
@@ -166,10 +206,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     if (!cloned) throw new Error('Premiere could not clone the active sequence.')
     const roughCut = (await project.getSequences()).find((item) => !existingIds.has(item.guid.toString()))
     if (!roughCut) throw new Error('Premiere cloned the sequence but did not return the new sequence.')
-    const name = `${sequence.name} - AI Rough Cut`
-    const projectItem = await roughCut.getProjectItem()
-    const named = this.tx(project, (compound) => compound.addAction(projectItem.createSetNameAction(name)), 'Name RoughCut sequence')
-    if (!named) throw new Error('Premiere cloned the sequence but could not rename it.')
+    const name = await this.nameGenerated(project, await roughCut.getProjectItem(), sequence.name, run?.action ?? 'Review Markers', run?.detail ?? `${decisions.length} markers`)
     await this.writeMarkers(project, roughCut, decisions, 'Add RoughCut markers')
     if (!await project.setActiveSequence(roughCut)) throw new Error('The rough cut was created, but Premiere could not open it.')
     return name
@@ -254,14 +291,13 @@ class UxpPremiereAdapter implements PremiereAdapter {
       // Classify this track.
       let isSeq = false
       let isAdj = false
-      let itemName = ''
       if (items.length === 1) {
         const ti = items[0] as VideoClipTrackItem
         isAdj = await ti.isAdjustmentLayer()
         if (!isAdj) {
           try {
             const projItem = await ti.getProjectItem()
-            itemName = projItem.name
+            const itemName = projItem.name
             const clip = this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
             isSeq = await clip.isSequence()
             // Multicam source clips register as sequences and have [MCn] in their name.
@@ -334,6 +370,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     cuts: CutPoint[],
     det: DetectedSources,
     endFrame: number,
+    detail = '',
   ): Promise<string> {
     let phase = 'init'
     try {
@@ -440,15 +477,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
 
       // Rename the clone.
       phase = 'rename clone'
-      const baseName = sequence.name.replace(/ - Auto Cut( \d+)?$/, '')
-      const cloneName = `${baseName} - Auto Cut`
-      const cloneItem = await cloneRef.getProjectItem()
-      const renameOk = this.tx(
-        project,
-        (c) => c.addAction(cloneItem.createSetNameAction(cloneName)),
-        'Rename auto-cut clone',
-      )
-      if (!renameOk) throw new Error('Premiere rejected the rename transaction.')
+      const cloneName = await this.nameGenerated(project, await cloneRef.getProjectItem(), sequence.name, 'Auto Cut', detail)
 
       // 7. Build the switched cut by camera-disable, keeping every angle on its
       //    own track. There is no programmatic razor, so for multi-segment cuts we
@@ -462,6 +491,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
       }
       const needsBlade = intervals.length > 1
       let bladed = false
+      const restoreFailures: string[] = []
       try {
         // Cache live handles once. lockedAccess keeps them valid across transactions
         // (the reuse pattern the working Vibe-splice spike relies on), so a dense cut
@@ -517,12 +547,23 @@ class UxpPremiereAdapter implements PremiereAdapter {
           phase = `disable cam${src.camera}`
           const track = await cloneSeq.getVideoTrack(src.vIndex)
           const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
-          const byStart = new Map<number, VideoClipTrackItem>()
-          for (const it of items) byStart.set(this.tickToFrame(await it.getStartTime(), fr), it as VideoClipTrackItem)
-          const targets: VideoClipTrackItem[] = []
-          for (const iv of toDisable) {
-            const hit = byStart.get(iv.startFrame) ?? byStart.get(iv.startFrame - 1) ?? byStart.get(iv.startFrame + 1)
-            if (hit) targets.push(hit)
+          const segments: TimelineSegment<VideoClipTrackItem>[] = []
+          for (const item of items) {
+            const it = item as VideoClipTrackItem
+            segments.push({
+              startFrame: this.tickToFrame(await it.getStartTime(), fr),
+              endFrame: this.tickToFrame(await it.getEndTime(), fr),
+              item: it,
+            })
+          }
+          let targets: VideoClipTrackItem[]
+          try {
+            targets = selectTimelineSegmentsForIntervals(segments, toDisable)
+          } catch (e) {
+            throw new Error(
+              `Camera ${src.camera} on V${src.vIndex + 1}: ${e instanceof Error ? e.message : String(e)}`,
+              { cause: e },
+            )
           }
           const BATCH = 20
           for (let i = 0; i < targets.length; i += BATCH) {
@@ -540,7 +581,6 @@ class UxpPremiereAdapter implements PremiereAdapter {
         // 8. Restore source in/out points — only if blading mutated them.
         if (bladed) {
           phase = 'restore source in/out'
-          const restoreFailures: string[] = []
           const rp = await this.ppro.Project.getActiveProject()
           if (rp) {
             const rs = await this.findSequenceByGuid(rp, sequenceId)
@@ -563,14 +603,14 @@ class UxpPremiereAdapter implements PremiereAdapter {
               }
             }
           }
-          if (restoreFailures.length > 0) {
-            throw new Error(
-              `Auto-cut FAILED: could not restore original source in/out points.\n` +
-              `Affected cameras:\n${restoreFailures.map(f => `  • ${f}`).join('\n')}\n` +
-              `Check these clips in the Source Monitor and reset their in/out points manually.`,
-            )
-          }
         }
+      }
+      if (restoreFailures.length > 0) {
+        throw new Error(
+          `Auto-cut FAILED: could not restore original source in/out points.\n` +
+          `Affected cameras:\n${restoreFailures.map(f => `  • ${f}`).join('\n')}\n` +
+          `Check these clips in the Source Monitor and reset their in/out points manually.`,
+        )
       }
 
       // 9. Activate the clone.
@@ -581,7 +621,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       if (/script object is no longer valid/i.test(msg)) {
-        throw new Error(`[${phase}] ${msg}`)
+        throw new Error(`[${phase}] ${msg}`, { cause: e })
       }
       throw e
     }
@@ -638,15 +678,8 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const clone = (await project.getSequences()).find(s => !beforeGuids.has(s.guid.toString()))
     if (!clone) throw new Error('Clone completed but new sequence not found.')
 
-    // 4. Rename clone
-    const baseName = sequence.name.replace(/ - Cold Open( \d+)?$/, '')
-    const cloneName = `${baseName} - Cold Open`
-    const cloneItem = await clone.getProjectItem()
-    this.tx(
-      project,
-      (c) => c.addAction(cloneItem.createSetNameAction(cloneName)),
-      'Rename cold open clone',
-    )
+    // 4. Name the clone and file it in the RoughCut bin
+    const cloneName = await this.nameGenerated(project, await clone.getProjectItem(), sequence.name, 'Social Cut', `${decisions.length} clips`)
 
     // 5. Clear target track on clone
     const editor = await this.ppro.SequenceEditor.getEditor(clone)
@@ -690,6 +723,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const cloneTrackCount = await clone.getVideoTrackCount()
     const useInsertForFirstClip = det.targetTrackIndex >= cloneTrackCount
 
+    const restoreFailures: string[] = []
     try {
       let currentStartFrame = 0
       let isFirstClip = true
@@ -753,7 +787,6 @@ class UxpPremiereAdapter implements PremiereAdapter {
       }
     } finally {
       // 7. Restore source in/out points with re-fetched context and fresh handles.
-      const restoreFailures: string[] = []
       const { project: rp, sequence: rs } = await this.context()
       for (const src of det.sources) {
         const saved = savedState.get(src.camera)
@@ -773,13 +806,13 @@ class UxpPremiereAdapter implements PremiereAdapter {
           restoreFailures.push(`Camera ${src.camera}: ${e instanceof Error ? e.message : String(e)}`)
         }
       }
-      if (restoreFailures.length > 0) {
-        throw new Error(
-          `Auto-cut FAILED: could not restore original source in/out points.\n` +
-          `Affected cameras:\n${restoreFailures.map(f => `  • ${f}`).join('\n')}\n` +
-          `Check these clips in the Source Monitor and reset their in/out points manually.`,
-        )
-      }
+    }
+    if (restoreFailures.length > 0) {
+      throw new Error(
+        `Auto-cut FAILED: could not restore original source in/out points.\n` +
+        `Affected cameras:\n${restoreFailures.map(f => `  • ${f}`).join('\n')}\n` +
+        `Check these clips in the Source Monitor and reset their in/out points manually.`,
+      )
     }
 
     // 8. Activate the clone
@@ -830,10 +863,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     const sub = await sequence.createSubsequence(true)
     if (!sub) throw new Error('Premiere could not create the cold open subsequence.')
 
-    const baseName = sequence.name.replace(/ - Cold Open( \d+)?$/, '')
-    const name = `${baseName} - Cold Open`
-    const subItem = await sub.getProjectItem()
-    this.tx(project, (c) => c.addAction(subItem.createSetNameAction(name)), 'Rename cold open subsequence')
+    const name = await this.nameGenerated(project, await sub.getProjectItem(), sequence.name, 'Cold Open', timeRange(startSeconds, endSeconds))
 
     // Activate the subsequence so detection + cutting target it.
     const subId = sub.guid.toString()
@@ -966,12 +996,23 @@ class UxpPremiereAdapter implements PremiereAdapter {
         if (toDisable.length === 0) continue
         const track = await seq.getVideoTrack(src.vIndex)
         const items = await track.getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
-        const byStart = new Map<number, VideoClipTrackItem>()
-        for (const it of items) byStart.set(this.tickToFrame(await it.getStartTime(), fr), it as VideoClipTrackItem)
-        const targets: VideoClipTrackItem[] = []
-        for (const iv of toDisable) {
-          const hit = byStart.get(iv.startFrame) ?? byStart.get(iv.startFrame - 1) ?? byStart.get(iv.startFrame + 1)
-          if (hit) targets.push(hit)
+        const segments: TimelineSegment<VideoClipTrackItem>[] = []
+        for (const item of items) {
+          const it = item as VideoClipTrackItem
+          segments.push({
+            startFrame: this.tickToFrame(await it.getStartTime(), fr),
+            endFrame: this.tickToFrame(await it.getEndTime(), fr),
+            item: it,
+          })
+        }
+        let targets: VideoClipTrackItem[]
+        try {
+          targets = selectTimelineSegmentsForIntervals(segments, toDisable)
+        } catch (e) {
+          throw new Error(
+            `Camera ${src.camera} on V${src.vIndex + 1}: ${e instanceof Error ? e.message : String(e)}`,
+            { cause: e },
+          )
         }
         const BATCH = 20
         for (let i = 0; i < targets.length; i += BATCH) {
