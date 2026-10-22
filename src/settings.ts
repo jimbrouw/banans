@@ -3,7 +3,6 @@
 
 export const SETTINGS = {
   claudeKey: 'roughcut.anthropicKey',
-  aiProvider: 'roughcut.aiProvider',
   tab: 'roughcut.tab',
   claudeModel: 'roughcut.claudeModel',
 } as const

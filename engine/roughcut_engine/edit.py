@@ -5,18 +5,12 @@ sequence times). The model returns line ids to remove and keep; we map those
 back to time ranges. Working in line ids, not timestamps, keeps the model's
 job to judgement and leaves all timing to code.
 
-Providers: Ollama on this Mac (default, free, offline) or Claude with the
-editor's own API key.
+The model is Claude, with the editor's own API key.
 """
 
 import json
-import os
 from dataclasses import dataclass
 
-import httpx
-
-OLLAMA_URL = os.environ.get("RC_OLLAMA_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("RC_OLLAMA_MODEL", "qwen3:8b")
 # Cost: only these two, each at the effort that keeps it cheap. Never Opus.
 CLAUDE_EFFORT = {"claude-haiku-5-5": "high", "claude-sonnet-5-5": "low"}
 CLAUDE_MODEL = "claude-sonnet-5-5"
@@ -107,27 +101,6 @@ def parse_reply(text: str) -> dict:
 
 # ── providers ─────────────────────────────────────────────────────────────────
 
-def call_ollama(system: str, user: str, model: str, client: httpx.Client | None = None, schema: dict = SCHEMA) -> dict:
-    payload = {
-        "model": model,
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        "format": schema,
-        "stream": False,
-        "think": False,
-        "options": {"temperature": 0, "num_ctx": 32768},
-    }
-    http = client or httpx.Client(timeout=600)
-    try:
-        r = http.post(f"{OLLAMA_URL}/api/chat", json=payload)
-    except httpx.ConnectError as e:
-        raise EditError("Ollama isn't running. Install it from ollama.com, then run: ollama pull " + model) from e
-    if r.status_code == 404:
-        raise EditError(f"Ollama doesn't have the model {model}. Run: ollama pull {model}")
-    if r.status_code >= 400:
-        raise EditError(f"Ollama error {r.status_code}: {r.text[:200]}")
-    return parse_reply(r.json()["message"]["content"])
-
-
 def make_claude_client(api_key: str):
     import anthropic
     return anthropic.Anthropic(api_key=api_key)
@@ -190,33 +163,29 @@ def to_ranges(ids: list[int], by_id: dict[int, Unit]) -> list[tuple[float, float
     return [(by_id[r[0]].start, by_id[r[-1]].end, r) for r in runs]
 
 
-def asker(provider: str, model: str | None, api_key: str | None):
-    """A function (system, user, schema) -> dict for the chosen provider, for passes beyond /edit."""
-    if provider == "claude" and not api_key:
-        raise EditError("Add your Claude API key in Setup to use Claude, or switch to Ollama.")
-    if provider not in ("ollama", "claude"):
-        raise EditError(f"Unknown provider: {provider}")
-    model = model or (CLAUDE_MODEL if provider == "claude" else OLLAMA_MODEL)
-    if provider == "claude":
-        return model, lambda system, user, schema: call_claude(system, user, api_key, model, schema)
-    return model, lambda system, user, schema: call_ollama(system, user, model, schema=schema)
+NO_KEY = "Add your Claude API key in the Setup tab first."
+
+
+def asker(model: str | None, api_key: str | None):
+    """A function (system, user, schema) -> dict for passes beyond /edit."""
+    if not api_key:
+        raise EditError(NO_KEY)
+    model = model or CLAUDE_MODEL
+    return model, lambda system, user, schema: call_claude(system, user, api_key, model, schema)
 
 
 def ai_edit(
     units: list[Unit],
-    provider: str = "ollama",
     model: str | None = None,
     api_key: str | None = None,
     instruction: str | None = None,
     prefer_last_take: bool = True,
 ) -> dict:
     if not units:
-        return {"provider": provider, "model": model, "removals": [], "keep_ids": []}
-    if provider == "claude" and not api_key:
-        raise EditError("Add your Anthropic API key to use Claude, or switch to Ollama.")
-    if provider not in ("ollama", "claude"):
-        raise EditError(f"Unknown provider: {provider}")
-    model = model or (CLAUDE_MODEL if provider == "claude" else OLLAMA_MODEL)
+        return {"model": model, "removals": [], "keep_ids": []}
+    if not api_key:
+        raise EditError(NO_KEY)
+    model = model or CLAUDE_MODEL
     system = SYSTEM.replace("{take_rule}", LAST_TAKE if prefer_last_take else BEST_TAKE)
     by_id = {u.id: u for u in units}
 
@@ -225,7 +194,7 @@ def ai_edit(
     keep: set[int] = set()
     for part in chunks(units):
         user = build_prompt(part, instruction)
-        reply = call_claude(system, user, api_key, model) if provider == "claude" else call_ollama(system, user, model)
+        reply = call_claude(system, user, api_key, model)
         allowed = {u.id for u in part}
         keep.update(i for i in reply.get("keep", []) if isinstance(i, int) and i in allowed)
         for entry in reply.get("remove", []):
@@ -241,4 +210,4 @@ def ai_edit(
         for start, end, run in to_ranges([i for i in ids if i not in keep], by_id)
     ]
     removals.sort(key=lambda r: r["start"])
-    return {"provider": provider, "model": model, "removals": removals, "keep_ids": sorted(keep)}
+    return {"model": model, "removals": removals, "keep_ids": sorted(keep)}

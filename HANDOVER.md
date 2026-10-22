@@ -30,7 +30,7 @@ It runs inside the **Adobe UXP runtime** — a sandboxed, browser-like environme
 ```
 src/
   App.tsx                      Shell: header (sequence picker, engine pill), tab bar, shared state
-  settings.ts                  Per-machine settings in localStorage: Claude key, AI provider, last tab
+  settings.ts                  Per-machine settings in localStorage: Claude key, Claude model, last tab
   panels/                      One component per tab; feature-local state lives in each
     Chrome.tsx                 SequencePicker (header) + TabBar (tabs show live status)
     ReviewPanel.tsx            Clean up tab: pauses, fillers, retakes, Chat Edit, remove cuts
@@ -137,10 +137,10 @@ SelectsPanel "Find the best clips"
 
 ### Checking the picks against real clips
 
-`npm run eval:selects -- --episode eval-input/<ep> --refs "<folder of clip XMLs>" --episode-name "<edit sequence name>" [--provider claude]`
-reads the editor's published clips (FCP XML of each clip sequence; `src/eval/clipReference.ts` maps them to episode time, including pulled-forward hooks), runs the selects pass on `<ep>/transcript.json`, and scores it (`src/eval/selectsEval.ts`): found (pick covers ≥50% of the editor's clip), rank, overlap, edge error, same opening line. Needs Ollama or `ANTHROPIC_API_KEY`. It also prints, for each published clip, every proposal that touched it and its fate (never proposed / too short / dropped as overlap / lost the comparisons / picked), which is how the fixes above were found.
+`npm run eval:selects -- --episode eval-input/<ep> --refs "<folder of clip XMLs>" --episode-name "<edit sequence name>" [--model claude-haiku-5-5]`
+reads the editor's published clips (FCP XML of each clip sequence; `src/eval/clipReference.ts` maps them to episode time, including pulled-forward hooks), runs the selects pass on `<ep>/transcript.json`, and scores it (`src/eval/selectsEval.ts`): found (pick covers ≥50% of the editor's clip), rank, overlap, edge error, same opening line. Needs `ANTHROPIC_API_KEY`; uses Sonnet 5.5 at low effort unless `--model` says otherwise. It also prints, for each published clip, every proposal that touched it and its fate (never proposed / too short / dropped as overlap / lost the comparisons / picked), which is how the fixes above were found.
 
-First results on the Kate Courtney episode (qwen3:8b, 2 reference Shorts): 0/2 → 1/2 after four runs. The hit covers 65% of the editor's clip but starts 10 s earlier and ends 12 s earlier: the editor trims the preamble to the strongest line and runs on to the payoff. The miss reached the comparisons but its text is a stretch where Whisper dropped punctuation. Inputs and results are gitignored (they hold media paths and transcript text). The run log records which clips were kept or dropped on every build.
+First results on the Kate Courtney episode (qwen3:8b, 2 reference Shorts): 0/2 → 1/2 after four runs. The hit covers 65% of the editor's clip but starts 10 s earlier and ends 12 s earlier: the editor trims the preamble to the strongest line and runs on to the payoff. The miss reached the comparisons but its text is a stretch where Whisper dropped punctuation. Then by model on the current splitter: qwen3:8b 0/2, Claude Haiku 5.5 (high effort) 0/2, Claude Sonnet 5.5 (low effort) 1/2 (pick #5, covers all of the editor's clip, ends within 0.1 s, starts 10 s early). Sonnet became the default and Ollama was removed. Inputs and results are gitignored (they hold media paths and transcript text). The run log records which clips were kept or dropped on every build.
 
 ## Active sequence
 
@@ -224,10 +224,10 @@ Who's talking, for the multicam autopilot: step 2 of the Multicam tab (`Multicam
 ```
 ReviewPanel "Find retakes & repeats" / Chat Edit box
   └─ reviewModel.speechUnits(words)   sentence-sized lines: split at . ? !, segment change, or a gap > 0.8s
-  └─ engineClient.aiEdit(units, {provider, apiKey, instruction, preferLastTake})
+  └─ engineClient.aiEdit(units, {apiKey, instruction, preferLastTake})
        └─ engine POST /edit → edit.ai_edit
             ├─ prompt: numbered lines "[id] mm:ss text" (+ "Editor instruction: …")
-            ├─ Ollama /api/chat (JSON-schema format) or Claude (anthropic SDK, structured output)
+            ├─ Claude (anthropic SDK, structured output; Sonnet 5.5 low or Haiku 5.5 high, never Opus)
             └─ returns removals (line-id runs → time ranges, reason, note) + keep_ids
   └─ buildCuts(words, silences, settings, aiRemovals)   AI cuts merge with adjacent pauses
 ```
@@ -236,7 +236,7 @@ ReviewPanel "Find retakes & repeats" / Chat Edit box
 - AI cuts show as cyan chips ("Retake · 3.0s · abandoned first attempt"), with their words struck through; click either to keep.
 - The Anthropic key is shared with the Cold Open Finder (`localStorage` `roughcut.anthropicKey`).
 - Browser demo without the engine returns a canned retake (`reviewDemo.demoAiRemovals`).
-- **Not yet measured:** cut quality with a real local model. Verified so far: tests with mocked providers, the real `anthropic` SDK against a mock transport, and the full panel → engine → Ollama-protocol path against a stub server.
+- **Not yet measured:** retake-cut quality on real footage. Verified so far: tests with a mocked Claude and the real `anthropic` SDK against a mock transport.
 
 ### Removing cuts via FCP XML (`xmlCut.ts`)
 

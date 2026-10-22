@@ -1,13 +1,12 @@
 import json
 from types import SimpleNamespace
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from roughcut_engine import edit
 from roughcut_engine.app import app
-from roughcut_engine.edit import EditError, Unit, ai_edit, build_prompt, call_claude, call_ollama, chunks, parse_reply, to_ranges
+from roughcut_engine.edit import EditError, Unit, ai_edit, build_prompt, call_claude, chunks, parse_reply, to_ranges
 
 UNITS = [
     Unit(0, 0.0, 2.0, "Hey everyone, welcome back."),
@@ -48,7 +47,7 @@ def test_chunks_overlap(monkeypatch):
 def test_ai_edit_maps_ids_to_ranges_and_keep_wins(monkeypatch):
     calls = []
 
-    def fake(system, user, model):
+    def fake(system, user, key, model):
         calls.append((system, user, model))
         return {
             "remove": [
@@ -59,9 +58,9 @@ def test_ai_edit_maps_ids_to_ranges_and_keep_wins(monkeypatch):
             "keep": [4],
         }
 
-    monkeypatch.setattr(edit, "call_ollama", fake)
-    out = ai_edit(UNITS, instruction="keep the last line")
-    assert out["model"] == edit.OLLAMA_MODEL
+    monkeypatch.setattr(edit, "call_claude", fake)
+    out = ai_edit(UNITS, api_key="sk-test", instruction="keep the last line")
+    assert out["model"] == edit.CLAUDE_MODEL
     assert out["keep_ids"] == [4]
     assert [(r["start"], r["end"], r["ids"], r["reason"]) for r in out["removals"]] == [
         (0.0, 2.0, [0], "repeat"),  # unknown reason falls back
@@ -73,38 +72,13 @@ def test_ai_edit_maps_ids_to_ranges_and_keep_wins(monkeypatch):
     assert user.endswith("Editor instruction: keep the last line")
 
 
-def test_ai_edit_best_take_and_claude_needs_key(monkeypatch):
+def test_ai_edit_best_take_and_needs_key(monkeypatch):
     seen = {}
-    monkeypatch.setattr(edit, "call_ollama", lambda s, u, m: seen.setdefault("system", s) and {"remove": [], "keep": []})
-    ai_edit(UNITS, prefer_last_take=False)
+    monkeypatch.setattr(edit, "call_claude", lambda s, u, k, m: seen.setdefault("system", s) and {"remove": [], "keep": []})
+    ai_edit(UNITS, api_key="sk-test", prefer_last_take=False)
     assert "keep the best complete take" in seen["system"]
     with pytest.raises(EditError, match="API key"):
-        ai_edit(UNITS, provider="claude")
-
-
-def test_call_ollama_sends_schema_and_parses_reply():
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        assert request.url.path == "/api/chat"
-        assert body["model"] == "qwen3:8b" and body["stream"] is False and body["think"] is False
-        assert body["format"] == edit.SCHEMA
-        assert body["messages"][0]["role"] == "system"
-        return httpx.Response(200, json={"message": {"content": '{"remove": [], "keep": [2]}'}})
-
-    client = httpx.Client(transport=httpx.MockTransport(handler))
-    assert call_ollama("sys", "user", "qwen3:8b", client) == {"remove": [], "keep": [2]}
-
-
-def test_call_ollama_explains_missing_model_and_not_running():
-    missing = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(404, json={"error": "model not found"})))
-    with pytest.raises(EditError, match="ollama pull qwen3:8b"):
-        call_ollama("s", "u", "qwen3:8b", missing)
-
-    def refuse(request):
-        raise httpx.ConnectError("refused", request=request)
-
-    with pytest.raises(EditError, match="Ollama isn't running"):
-        call_ollama("s", "u", "qwen3:8b", httpx.Client(transport=httpx.MockTransport(refuse)))
+        ai_edit(UNITS)
 
 
 class FakeClaude:
@@ -152,10 +126,9 @@ def test_call_claude_refusal(monkeypatch):
 def test_edit_route():
     client = TestClient(app)
     units = [{"id": u.id, "start": u.start, "end": u.end, "text": u.text} for u in UNITS]
-    r = client.post("/edit", json={"units": units, "provider": "claude"})
+    r = client.post("/edit", json={"units": units})
     assert r.status_code == 400 and "API key" in r.json()["detail"]
-    assert client.post("/edit", json={"units": [], "provider": "ollama"}).json()["removals"] == []
-    assert client.post("/edit", json={"units": units, "provider": "openai"}).status_code == 422
+    assert client.post("/edit", json={"units": []}).json()["removals"] == []
 
 
 def test_call_claude_through_real_sdk(monkeypatch):

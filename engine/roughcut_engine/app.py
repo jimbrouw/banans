@@ -1,7 +1,5 @@
 """HTTP API for the RoughCut panel. Binds to 127.0.0.1 only — nothing leaves the machine."""
 
-from typing import Literal
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -42,7 +40,6 @@ class EditUnit(BaseModel):
 
 class EditRequest(BaseModel):
     units: list[EditUnit]
-    provider: Literal["ollama", "claude"] = "ollama"
     model: str | None = None
     api_key: str | None = None  # the editor's own key; used for this request only, never stored or logged
     instruction: str | None = Field(None, max_length=2000)
@@ -52,7 +49,6 @@ class EditRequest(BaseModel):
 class SelectsRequest(BaseModel):
     units: list[EditUnit]
     speakers: dict[int, str] = {}
-    provider: Literal["ollama", "claude"] = "ollama"
     model: str | None = None
     api_key: str | None = None  # the editor's own key; used for this request only, never stored or logged
     audio_path: str | None = None  # episode audio, for how lively each passage is
@@ -61,7 +57,6 @@ class SelectsRequest(BaseModel):
 
 class ChaptersRequest(BaseModel):
     units: list[EditUnit]
-    provider: Literal["ollama", "claude"] = "ollama"
     model: str | None = None
     api_key: str | None = None
 
@@ -107,7 +102,7 @@ def transcribe_route(req: TranscribeRequest) -> dict:
 def edit_route(req: EditRequest) -> dict:
     try:
         units = [Unit(u.id, u.start, u.end, u.text) for u in req.units]
-        return ai_edit(units, req.provider, req.model, req.api_key, req.instruction, req.prefer_last_take)
+        return ai_edit(units, req.model, req.api_key, req.instruction, req.prefer_last_take)
     except EditError as e:
         raise HTTPException(400, str(e)) from e
 
@@ -115,7 +110,7 @@ def edit_route(req: EditRequest) -> dict:
 @app.post("/selects")
 def selects_route(req: SelectsRequest) -> dict:
     try:
-        model, ask = asker(req.provider, req.model, req.api_key)
+        model, ask = asker(req.model, req.api_key)
         units = [Unit(u.id, u.start, u.end, u.text) for u in req.units]
         db = levels(req.audio_path, None, 10)["db"] if req.audio_path else None
         return {"model": model, **run_selects(units, ask, req.speakers, db, 10, req.count)}
@@ -126,7 +121,7 @@ def selects_route(req: SelectsRequest) -> dict:
 @app.post("/chapters")
 def chapters_route(req: ChaptersRequest) -> dict:
     try:
-        model, ask = asker(req.provider, req.model, req.api_key)
+        model, ask = asker(req.model, req.api_key)
         return {"model": model, **run_chapters([Unit(u.id, u.start, u.end, u.text) for u in req.units], ask)}
     except EditError as e:
         raise HTTPException(400, str(e)) from e
@@ -134,9 +129,9 @@ def chapters_route(req: ChaptersRequest) -> dict:
 
 @app.post("/jobs/selects")
 def start_selects(req: SelectsRequest) -> dict:
-    """Start the selects pass in the background (it takes minutes on a local model); poll GET /jobs/{id}."""
+    """Start the selects pass in the background (it takes minutes); poll GET /jobs/{id}."""
     try:
-        model, ask = asker(req.provider, req.model, req.api_key)
+        model, ask = asker(req.model, req.api_key)
     except EditError as e:
         raise HTTPException(400, str(e)) from e
     units = [Unit(u.id, u.start, u.end, u.text) for u in req.units]

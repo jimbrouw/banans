@@ -53,7 +53,7 @@ Premiere ── RoughCut UXP panel (React, existing)
           ├─ /transcribe   whisper.cpp (Metal) → words + timestamps, fillers kept
           ├─ /diarize      sherpa-onnx or pyannote → speaker turns  ← fixes Auto-Cut
           ├─ /silences     ffmpeg silencedetect / RMS on the actual audio
-          ├─ /llm          Ollama (Qwen/Llama), or Claude with your own key
+          ├─ /llm          Claude with your own key (Sonnet 5.5 low or Haiku 5.5 high)
           ├─ /faces        Apple Vision / MediaPipe → reframe boxes per second
           ├─ /broll/search local CLIP embeddings over your b-roll folder
           └─ /library      indexes your SFX / music / MOGRT folders
@@ -87,7 +87,7 @@ Each phase is one PR to `jimbrouw/banans` and ships on its own.
 | 1 | **Local engine v1** ✅ (mlx-whisper instead of whisper.cpp) | `roughcut-engine` service + `/transcribe` (whisper.cpp, word timestamps, verbatim fillers) + `/silences` (ffmpeg). Panel health check and engine status UI. | Medium (packaging) |
 | 2 | **Review screen** ✅ (now on Premiere's transcript first; engine optional) | The new Review UX from §4, wired to existing `analyse.ts` decisions plus the new word-level data. | Low |
 | 3 | **Real cutting** ✅ 3b XML path built (3a ripple pending Probe D) | Apply kept segments to a new sequence: either (a) blade + ripple-delete in UXP if the spike says yes, or (b) generate FCP XML and import it (reuses `fast-xml-parser` + `eval/fcpXmlReference.ts`). Silence + filler cuts with padding/handles. | **Highest**: depends on UXP API |
-| 4 | **AI pass** ✅ (quality on real footage not yet measured) | `/llm`: bad takes, repetitions, "keep last take", off-topic, plus Chat Edit. Ollama by default, Claude key optional. Same JSON contract as `coldOpenFinder.ts`. Score it with the eval harness. | Medium (local model quality) |
+| 4 | **AI pass** ✅ (quality on real footage not yet measured) | `/llm`: bad takes, repetitions, "keep last take", off-topic, plus Chat Edit. Claude with your own key (Ollama was tried and removed). Same JSON contract as `coldOpenFinder.ts`. Score it with the eval harness. | Medium (local model quality) |
 | 5 | **Podcast Mode upgrade** ✅ (Premiere labels first, mic-level fallback; not yet tuned on real recordings) | `/diarize` + audio-energy active-speaker detection, so Auto-Cut uses real speakers instead of rotation. Auto speaker→camera mapping from clip names. | Medium |
 | 6 | **Captions + Zooms** | Caption track from words, 2–3 own MOGRT styles, word-pop/karaoke. Auto zooms on emphasis beats (reuses Phase 2 punch-ins). | Medium (MOGRT API) |
 | 7 | **Reframe + Shorts** | `/faces` → 9:16 sequence with position keyframes. Cold Open / highlights export straight to vertical. | Medium |
@@ -97,7 +97,7 @@ Each phase is one PR to `jimbrouw/banans` and ships on its own.
 
 ## 6. Decisions (2026-10-20)
 
-- **AI:** Ollama local by default; an optional Claude key unlocks better quality.
+- **AI:** Claude with your own key, Sonnet 5.5 at low effort by default. Ollama was tried and removed: it found none of the editor's Shorts.
 - **Engine:** Python service (FastAPI on 127.0.0.1:7317, packaged with `uv`): whisper.cpp via `pywhispercpp`, `pyannote`/`sherpa-onnx`, `open_clip`, `mediapipe`, ffmpeg.
 - **Platform:** Mac only (Apple Silicon, Metal).
 - **Focus:** all three (podcasts, talking-head, shorts). The phase order above stays: talking-head cuts (1–4) first, because Podcast Mode already exists; then diarization (5); then shorts (6–7).

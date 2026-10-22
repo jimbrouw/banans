@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Check, MessageSquare, Pause, Scissors, Sparkles, Wand2 } from 'lucide-react'
 import { Options, Press, Toggle } from '../ui'
-import { NO_CLAUDE_KEY, readSetting, SETTINGS, writeSetting } from '../settings'
+import { NO_CLAUDE_KEY, readSetting, SETTINGS } from '../settings'
 import { errorMessage, formatTime } from '../uiHelpers'
 import { aiEdit, detectSilences, ENGINE_OFF_MESSAGE, engineHealth, transcribeMedia } from '../engineClient'
-import type { AiProvider, SilenceRange } from '../engineClient'
+import type { SilenceRange } from '../engineClient'
 import { isPremiereHost, premiere } from '../premiereAdapter'
 import { buildCuts, cutsToDecisions, defaultReviewSettings, gapSilences, groupLines, mapToSequence, speechUnits, summarise, wordsForClip } from '../reviewModel'
 import type { AiRemoval, ReviewCut, ReviewSettings, ReviewWord } from '../reviewModel'
@@ -25,7 +25,6 @@ export function ReviewPanel({ sequenceId, onCreated, onStatus }: { sequenceId: s
   const [silences, setSilences] = useState<SilenceRange[]>([])
   const [aiRemovals, setAiRemovals] = useState<AiRemoval[]>([])
   const [kept, setKept] = useState<Set<string>>(new Set()) // cuts the editor switched off
-  const [provider, setProvider] = useState<AiProvider>(() => readSetting(SETTINGS.aiProvider, 'ollama') as AiProvider)
   const [preferLastTake, setPreferLastTake] = useState(true)
   const [chat, setChat] = useState('')
   const [aiNote, setAiNote] = useState('')
@@ -111,9 +110,9 @@ export function ReviewPanel({ sequenceId, onCreated, onStatus }: { sequenceId: s
         }
         throw new Error(ENGINE_OFF_MESSAGE)
       }
-      if (provider === 'claude' && !readSetting(SETTINGS.claudeKey)) throw new Error(NO_CLAUDE_KEY)
-      const res = await logged(instruction ? 'Chat Edit' : 'AI pass', { provider, lines: units.length, instruction, lastTake: preferLastTake },
-        () => aiEdit(units, { provider, apiKey: readSetting(SETTINGS.claudeKey), instruction, preferLastTake }),
+      if (!readSetting(SETTINGS.claudeKey)) throw new Error(NO_CLAUDE_KEY)
+      const res = await logged(instruction ? 'Chat Edit' : 'AI pass', { lines: units.length, instruction, lastTake: preferLastTake },
+        () => aiEdit(units, { apiKey: readSetting(SETTINGS.claudeKey), instruction, preferLastTake }),
         (r) => `${r.model}: ${r.removals.length} cuts · ${r.keep_ids.length} kept`)
       const found: AiRemoval[] = res.removals.map(({ start, end, reason, note }) => ({ start, end, reason, note }))
       if (!instruction) {
@@ -182,11 +181,10 @@ export function ReviewPanel({ sequenceId, onCreated, onStatus }: { sequenceId: s
             <Press className="primary" onClick={load} disabled={busy}><Wand2 size={17} />{status === 'loading' ? step : 'Find pauses and fillers'}</Press>
           </>}
       {sourceNote && <p className="footnote">{sourceNote}</p>}
-      <Options summary={`Pauses over ${settings.minSilence}s, ${settings.cutFillers ? 'fillers cut' : 'fillers kept'}, AI: ${provider === 'claude' ? 'Claude' : 'Ollama'}`}>
+      <Options summary={`Pauses over ${settings.minSilence}s, ${settings.cutFillers ? 'fillers cut' : 'fillers kept'}`}>
         <div className="compact-settings">
           <label>Shortest pause <select value={settings.minSilence} onChange={(e) => patch({ minSilence: Number(e.target.value) })}><option value="0.4">0.4s</option><option value="0.6">0.6s</option><option value="1">1.0s</option><option value="1.5">1.5s</option></select></label>
           <label>Breathing room <select value={settings.padding} onChange={(e) => patch({ padding: Number(e.target.value) })}><option value="0.06">Tight</option><option value="0.12">Natural</option><option value="0.2">Loose</option></select></label>
-          <label>AI for retakes <select value={provider} onChange={(e) => { const p = e.target.value as AiProvider; setProvider(p); writeSetting(SETTINGS.aiProvider, p) }}><option value="ollama">Ollama, on this Mac</option><option value="claude">Claude, your API key</option></select></label>
         </div>
         <div className="analysis-options">
           <label><div><strong>Cut filler words</strong><span>um, uh, er, hmm</span></div><Toggle checked={settings.cutFillers} onChange={() => patch({ cutFillers: !settings.cutFillers })} /></label>

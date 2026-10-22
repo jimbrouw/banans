@@ -2,9 +2,9 @@
 // editor actually published.
 //
 //   npm run eval:selects -- --episode "eval-input/kate-courtney" --refs "xlr social clips" \
-//     --episode-name "Kate Courtney v1" [--provider claude] [--audio "/path/episode mix.wav"]
+//     --episode-name "Kate Courtney v1" [--model claude-haiku-5-5] [--audio "/path/episode mix.wav"]
 //
-// Needs the local engine running, and Ollama, or ANTHROPIC_API_KEY with --provider claude.
+// Needs the local engine running and ANTHROPIC_API_KEY.
 // Writes the picks and the score to <episode>/selects-eval.json (gitignored: it holds transcript text).
 
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -21,9 +21,8 @@ const arg = (name: string, fallback?: string) => {
 const episodeDir = arg('episode', 'eval-input/kate-courtney')!
 const refsDir = arg('refs', 'xlr social clips')!
 const episodeName = arg('episode-name', 'Kate Courtney v1')!
-const provider = arg('provider', 'ollama')!
 // Claude: Sonnet 5.5 (low effort) by default, or --model claude-haiku-5-5 (high effort). Never Opus.
-const model = provider === 'claude' ? arg('model', 'claude-sonnet-5-5') : undefined
+const model = arg('model', 'claude-sonnet-5-5')
 const audio = arg('audio')
 const mmss = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`
 
@@ -32,12 +31,12 @@ const units = speechUnits(wordsForClip(transcript.words, { path: '', start: 0, e
 const references = readdirSync(refsDir).filter((f) => f.endsWith('.xml')).map((f) =>
   readReferenceClip(readFileSync(join(refsDir, f), 'utf8'), (n) => n === episodeName || n.startsWith(`${episodeName}.prproj_mixdown`)))
 
-console.log(`${units.length} sentence lines, ${references.length} published clips to compare against. Asking ${provider}…`)
+console.log(`${units.length} sentence lines, ${references.length} published clips to compare against. Asking ${model}…`)
 // Runs as an engine job: a local model takes longer than fetch will wait for one response.
 const started = await fetch('http://localhost:7317/jobs/selects', {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ units, provider, model, api_key: process.env.ANTHROPIC_API_KEY, audio_path: audio }),
+  body: JSON.stringify({ units, model, api_key: process.env.ANTHROPIC_API_KEY, audio_path: audio }),
 })
 const startBody = await started.json() as { job?: string; detail?: string }
 if (!started.ok || !startBody.job) { console.error(`Engine: ${startBody.detail}`); process.exit(1) }

@@ -43,7 +43,7 @@ export function SetupPanel() {
 
       <section className="block">
         <h3 className="block-title">Claude API key</h3>
-        <p className="lede">Used for cold opens, and for retakes when you pick Claude instead of Ollama. Stays on this Mac.</p>
+        <p className="lede">Used for every AI feature: retakes, clips, chapters and cold opens. Stays on this Mac.</p>
         <input className="api-key" type="password" autoComplete="off" placeholder="sk-ant-…" value={key} onChange={(e) => { setKey(e.target.value); writeSetting(SETTINGS.claudeKey, e.target.value.trim()) }} />
         <Press className="text-button" onClick={() => openExternal('https://console.anthropic.com/settings/keys')}>Get a key at console.anthropic.com</Press>
         <div className="compact-settings">

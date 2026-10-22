@@ -113,11 +113,11 @@ def test_chapters_are_valid_and_retitled():
     assert out["text"].splitlines()[0] == "0:00 Why riders quit"
 
 
-def test_routes_need_a_key_for_claude():
+def test_routes_need_a_key():
     units = [{"id": u.id, "start": u.start, "end": u.end, "text": u.text} for u in UNITS]
     client = TestClient(app)
     for route in ("/selects", "/chapters"):
-        r = client.post(route, json={"units": units, "provider": "claude"})
+        r = client.post(route, json={"units": units})
         assert r.status_code == 400 and "API key" in r.json()["detail"]
 
 
@@ -125,7 +125,7 @@ def test_selects_job_runs_in_background_and_reports_progress(monkeypatch):
     import time
     from roughcut_engine import app as app_module
 
-    def fake_asker(provider, model, api_key):
+    def fake_asker(model, api_key):
         return "fake", fake_ask([cand(0, 9), cand(20, 28, type_="tip")])[0]
     monkeypatch.setattr(app_module, "asker", fake_asker)
     client = TestClient(app)
@@ -147,10 +147,10 @@ def test_job_reports_errors():
 
     def boom(progress):
         progress("halfway")
-        raise EditError("Ollama isn't running.")
+        raise EditError("Couldn't reach the Claude API.")
     job = jobs.start(boom)
     for _ in range(50):
         if jobs.get(job)["status"] != "running":
             break
         time.sleep(0.02)
-    assert jobs.get(job)["status"] == "error" and "Ollama" in jobs.get(job)["error"]
+    assert jobs.get(job)["status"] == "error" and "Claude" in jobs.get(job)["error"]
