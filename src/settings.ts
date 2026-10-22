@@ -3,6 +3,7 @@
 
 export const SETTINGS = {
   claudeKey: 'roughcut.anthropicKey',
+  aiProvider: 'roughcut.aiProvider',
   tab: 'roughcut.tab',
   claudeModel: 'roughcut.claudeModel',
 } as const
@@ -13,6 +14,10 @@ export const CLAUDE_MODELS = [
   { id: 'claude-haiku-5-5', label: 'Haiku 5.5 (cheapest, about 3¢ an episode)', effort: 'high' },
 ] as const
 export type ClaudeModel = (typeof CLAUDE_MODELS)[number]
+
+// Claude by default; Ollama is an optional free, offline model on this Mac (it scored lowest in the selects eval).
+export type AiProvider = 'claude' | 'ollama'
+export const aiProvider = (): AiProvider => (readSetting(SETTINGS.aiProvider) === 'ollama' ? 'ollama' : 'claude')
 
 /** The chosen Claude model, falling back to Sonnet for anything not on the list. */
 export function claudeModel(): ClaudeModel {

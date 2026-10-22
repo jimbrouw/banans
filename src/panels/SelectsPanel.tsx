@@ -10,7 +10,7 @@ import { getPremiereTranscriptWords, getPrimaryAudioClips, setPlayhead } from '.
 import { buildClipsViaXml } from '../xmlCutHost'
 import { demoSelects } from '../reviewDemo'
 import { logged } from '../runLog'
-import { NO_CLAUDE_KEY, readSetting, SETTINGS } from '../settings'
+import { aiProvider, NO_CLAUDE_KEY, readSetting, SETTINGS } from '../settings'
 import { isPremiereHost } from '../premiereAdapter'
 
 type Status = 'idle' | 'reading' | 'thinking' | 'building' | 'chapters'
@@ -30,6 +30,7 @@ export function SelectsPanel({ onCreated }: { onCreated: (name: string) => void 
   const [note, setNote] = useState('')
   const [chapters, setChapters] = useState<ChaptersResult | null>(null)
   const busy = status !== 'idle'
+  const provider = aiProvider
   const apiKey = () => readSetting(SETTINGS.claudeKey)
 
   /** The whole episode's words: Premiere's transcript first, Whisper if there is none. */
@@ -59,13 +60,13 @@ export function SelectsPanel({ onCreated }: { onCreated: (name: string) => void 
         setStep('Reading the episode (demo)'); await new Promise((r) => setTimeout(r, 600))
         setClips(demoSelects().clips); setDropped(new Set()); setNote('Demo: 14 proposed, 9 passed the checks.'); return
       }
-      if (!apiKey()) throw new Error(NO_CLAUDE_KEY)
+      if (provider() === 'claude' && !apiKey()) throw new Error(NO_CLAUDE_KEY)
       const { words: w, audioPath } = await episodeWords()
       if (!await engineHealth()) throw new Error(ENGINE_OFF_MESSAGE)
       setStatus('thinking'); setStep('Reading the whole episode and comparing clips (a few minutes)')
       const units = speechUnits(w)
-      const res = await logged('Find clips', { lines: units.length },
-        () => findSelects(units, { apiKey: apiKey(), audioPath }, setStep),
+      const res = await logged('Find clips', { lines: units.length, provider: provider() },
+        () => findSelects(units, { provider: provider(), apiKey: apiKey(), audioPath }, setStep),
         (r) => `${r.model}: ${r.proposed} proposed, ${r.valid} valid, top ${r.clips.length}: ${r.clips.map((c) => `${formatTime(c.pieces[0].start)} ${c.title}`).join(' | ')}`)
       setClips(res.clips); setDropped(new Set())
       setNote(`${res.proposed} proposed, ${res.valid} passed the checks, ${res.shortlisted} compared head to head.`)
@@ -99,7 +100,7 @@ export function SelectsPanel({ onCreated }: { onCreated: (name: string) => void 
       const { words: w } = await episodeWords()
       if (!await engineHealth()) throw new Error(ENGINE_OFF_MESSAGE)
       setStep('Finding the chapters')
-      setChapters(await logged('Chapters', {}, () => makeChapters(speechUnits(w), { apiKey: apiKey() }), (r) => r.text.replace(/\n/g, ' | ')))
+      setChapters(await logged('Chapters', {}, () => makeChapters(speechUnits(w), { provider: provider(), apiKey: apiKey() }), (r) => r.text.replace(/\n/g, ' | ')))
     } catch (reason) {
       setError(errorMessage(reason))
     } finally {

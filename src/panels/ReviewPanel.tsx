@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Check, MessageSquare, Pause, Scissors, Sparkles, Wand2 } from 'lucide-react'
 import { Options, Press, Toggle } from '../ui'
-import { NO_CLAUDE_KEY, readSetting, SETTINGS } from '../settings'
+import { aiProvider, NO_CLAUDE_KEY, readSetting, SETTINGS } from '../settings'
 import { errorMessage, formatTime } from '../uiHelpers'
 import { aiEdit, detectSilences, ENGINE_OFF_MESSAGE, engineHealth, transcribeMedia } from '../engineClient'
 import type { SilenceRange } from '../engineClient'
@@ -110,9 +110,10 @@ export function ReviewPanel({ sequenceId, onCreated, onStatus }: { sequenceId: s
         }
         throw new Error(ENGINE_OFF_MESSAGE)
       }
-      if (!readSetting(SETTINGS.claudeKey)) throw new Error(NO_CLAUDE_KEY)
-      const res = await logged(instruction ? 'Chat Edit' : 'AI pass', { lines: units.length, instruction, lastTake: preferLastTake },
-        () => aiEdit(units, { apiKey: readSetting(SETTINGS.claudeKey), instruction, preferLastTake }),
+      const provider = aiProvider()
+      if (provider === 'claude' && !readSetting(SETTINGS.claudeKey)) throw new Error(NO_CLAUDE_KEY)
+      const res = await logged(instruction ? 'Chat Edit' : 'AI pass', { provider, lines: units.length, instruction, lastTake: preferLastTake },
+        () => aiEdit(units, { provider, apiKey: readSetting(SETTINGS.claudeKey), instruction, preferLastTake }),
         (r) => `${r.model}: ${r.removals.length} cuts · ${r.keep_ids.length} kept`)
       const found: AiRemoval[] = res.removals.map(({ start, end, reason, note }) => ({ start, end, reason, note }))
       if (!instruction) {

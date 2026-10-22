@@ -4,7 +4,8 @@ import { openExternal } from '../uiHelpers'
 import { ENGINE_OFF_MESSAGE, ENGINE_URL, engineHealth, lastEngineError } from '../engineClient'
 import type { EngineHealth } from '../engineClient'
 import { logPath } from '../runLog'
-import { CLAUDE_MODELS, claudeModel, readSetting, SETTINGS, writeSetting } from '../settings'
+import { aiProvider, CLAUDE_MODELS, claudeModel, readSetting, SETTINGS, writeSetting } from '../settings'
+import type { AiProvider } from '../settings'
 import { isPremiereHost } from '../premiereAdapter'
 import { SpikePanel } from './SpikePanel'
 
@@ -14,6 +15,7 @@ export function SetupPanel() {
   const [engineError, setEngineError] = useState('')
   const [key, setKey] = useState(() => readSetting(SETTINGS.claudeKey))
   const [model, setModel] = useState(() => claudeModel().id)
+  const [provider, setProvider] = useState<AiProvider>(aiProvider)
   const [log, setLog] = useState<string | null>(null)
 
   const check = async () => {
@@ -42,8 +44,23 @@ export function SetupPanel() {
       </section>
 
       <section className="block">
+        <h3 className="block-title">AI</h3>
+        <p className="lede">Used for retakes, clips and chapters.</p>
+        <div className="compact-settings">
+          <label>Model <select value={provider} onChange={(e) => { const p = e.target.value as AiProvider; setProvider(p); writeSetting(SETTINGS.aiProvider, p) }}>
+            <option value="claude">Claude, your API key (best picks)</option>
+            <option value="ollama">Ollama, free and offline on this Mac</option>
+          </select></label>
+        </div>
+        {provider === 'ollama' && <>
+          <p className="footnote">Install Ollama, then run <code>ollama pull qwen3:8b</code> in Terminal. It found fewer good clips than Claude in testing. Cold opens always use Claude.</p>
+          <Press className="text-button" onClick={() => openExternal('https://ollama.com/download')}>Download Ollama</Press>
+        </>}
+      </section>
+
+      <section className="block">
         <h3 className="block-title">Claude API key</h3>
-        <p className="lede">Used for every AI feature: retakes, clips, chapters and cold opens. Stays on this Mac.</p>
+        <p className="lede">Used for cold opens, and for everything else when Claude is chosen above. Stays on this Mac.</p>
         <input className="api-key" type="password" autoComplete="off" placeholder="sk-ant-…" value={key} onChange={(e) => { setKey(e.target.value); writeSetting(SETTINGS.claudeKey, e.target.value.trim()) }} />
         <Press className="text-button" onClick={() => openExternal('https://console.anthropic.com/settings/keys')}>Get a key at console.anthropic.com</Press>
         <div className="compact-settings">

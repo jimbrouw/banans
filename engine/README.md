@@ -38,10 +38,10 @@ The first `uv run` installs dependencies. The first transcription downloads the 
 | `POST /silences` | `{path, noise_db=-35, min_silence=0.5}` | `{duration, silences:[{start,end}]}` in seconds |
 | `POST /transcribe` | `{path, model?, language?}` | `{model, language, segments:[{start,end,text}], words:[{text,start,end,prob,filler,segment}]}` |
 | `POST /levels` | `{path, channel?, rate=10}` | `{rate, channel, duration, db:[...]}`: loudness per 1/rate s, for Podcast Mode's mic fallback |
-| `POST /selects` | `{units, speakers?, model?, api_key, audio_path?, count=5}` | `{model, clips:[{rank,title,title_check,type,idea,opening_line,why,pieces,duration,hook_pulled_forward,hook_score,energy}], proposed, valid, shortlisted}` |
+| `POST /selects` | `{units, speakers?, provider, api_key?, audio_path?, count=5}` | `{model, clips:[{rank,title,title_check,type,idea,opening_line,why,pieces,duration,hook_pulled_forward,hook_score,energy}], proposed, valid, shortlisted}` |
 | `POST /jobs/selects` | same as `/selects` | `{job}`; poll `GET /jobs/{id}` → `{status, step, result, error, seconds}` (use this from clients: a local model takes minutes) |
-| `POST /chapters` | `{units, model?, api_key}` | `{model, valid, chapters:[{start,label,title,seconds}], text}` |
-| `POST /edit` | `{units:[{id,start,end,text}], model?, api_key, instruction?, prefer_last_take}` | `{model, removals:[{start,end,ids,reason,note}], keep_ids}` |
+| `POST /chapters` | `{units, provider, api_key?}` | `{model, valid, chapters:[{start,label,title,seconds}], text}` |
+| `POST /edit` | `{units:[{id,start,end,text}], provider:"claude"\|"ollama" (default claude), api_key?, instruction?, prefer_last_take}` | `{provider, model, removals:[{start,end,ids,reason,note}], keep_ids}` |
 
 - Results are cached by path, file size, mtime and parameters, so a re-run is instant.
 - `filler: true` marks hard fillers only (um, uh, er, hmm and similar). Context-dependent ones like "like" and "you know" are left for the AI pass.
@@ -52,7 +52,13 @@ The first `uv run` installs dependencies. The first transcription downloads the 
 
 The panel sends sentence-sized transcript lines. The model returns **line ids** to remove (retake, false start, repeat, off-topic, or "instruction" for Chat Edit) and to keep; the engine maps ids back to time ranges. The model never deals with timestamps.
 
-- **Claude (your key), the only AI.** Ollama was removed after the selects eval: qwen3:8b and Claude Haiku found none of the editor's two Shorts, Sonnet found one. Uses the official `anthropic` SDK with structured JSON output. To keep cost down it only accepts `claude-sonnet-5-5` (effort low, the default) or `claude-haiku-5-5` (effort high), picked in the Setup tab; any other model, Opus included, is refused, and there are no server-side fallbacks. The key is sent per request from the panel and is never stored or logged by the engine.
+- **Claude (default, your key).** See below.
+- **Ollama (optional, free, offline).** Chosen in the Setup tab. It found none of the editor's two Shorts in the selects eval (Claude Sonnet found one). Install it from [ollama.com/download](https://ollama.com/download), then pull the model:
+  ```bash
+  ollama pull qwen3:8b
+  ```
+  Override the model with `RC_OLLAMA_MODEL` and the address with `RC_OLLAMA_URL`. Requests use Ollama's JSON-schema `format`, `think: false` and temperature 0.
+- **Claude.** Uses the official `anthropic` SDK with structured JSON output. To keep cost down it only accepts `claude-sonnet-5-5` (effort low, the default) or `claude-haiku-5-5` (effort high), picked in the Setup tab; any other model, Opus included, is refused, and there are no server-side fallbacks. The key is sent per request from the panel and is never stored or logged by the engine.
 - Long transcripts go in chunks of 250 lines with 15 lines of overlap.
 
 ## Test

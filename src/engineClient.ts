@@ -5,6 +5,7 @@
 // heavy lifting (transcription, silence detection) on the user's machine.
 
 import { claudeModel } from './settings'
+import type { AiProvider } from './settings'
 
 export const ENGINE_URL = 'http://localhost:7317'
 export const ENGINE_OFF_MESSAGE = 'The local engine isn’t set up. Run engine/install.sh once and it starts by itself when RoughCut needs it.'
@@ -64,20 +65,24 @@ export interface LevelsResult { rate: number; channel: number | null; duration: 
 export const micLevels = (path: string, channel: number | null) =>
   call<LevelsResult>('/levels', { path, channel, rate: 10 }, 10 * 60_000)
 
+export type { AiProvider }
+/** Claude calls always name the chosen cheap model, so the engine never falls back to its own default. */
+const modelFor = (provider: AiProvider) => (provider === 'claude' ? claudeModel().id : undefined)
 export interface AiEditResult {
+  provider: AiProvider
   model: string
   removals: { start: number; end: number; ids: number[]; reason: 'retake' | 'false_start' | 'repeat' | 'off_topic' | 'instruction'; note: string }[]
   keep_ids: number[]
 }
 
-// A long episode can take several minutes.
+// Local models on a long episode can take several minutes.
 export const aiEdit = (
   units: { id: number; start: number; end: number; text: string }[],
-  opts: { apiKey?: string; instruction?: string; preferLastTake: boolean },
+  opts: { provider: AiProvider; apiKey?: string; instruction?: string; preferLastTake: boolean },
 ) => call<AiEditResult>('/edit', {
   units,
-  // Always name the chosen cheap model, so the engine never falls back to its own default.
-  model: claudeModel().id,
+  provider: opts.provider,
+  model: modelFor(opts.provider),
   api_key: opts.apiKey || undefined,
   instruction: opts.instruction || undefined,
   prefer_last_take: opts.preferLastTake,
@@ -100,7 +105,7 @@ export interface SelectClip {
 export interface SelectsResult { model: string; clips: SelectClip[]; proposed: number; valid: number; shortlisted: number }
 export interface ChaptersResult { model: string; valid: boolean; chapters: { start: number; label: string; title: string; seconds: number }[]; text: string }
 type Units = { id: number; start: number; end: number; text: string }[]
-type AiOpts = { apiKey?: string }
+type AiOpts = { provider: AiProvider; apiKey?: string }
 
 interface Job<T> { status: 'running' | 'done' | 'error'; step: string; result: T | null; error: string | null; seconds: number }
 
@@ -109,7 +114,7 @@ interface Job<T> { status: 'running' | 'done' | 'error'; step: string; result: T
  * minutes on a local model: runs as an engine job, polled, reporting each step.
  */
 export async function findSelects(units: Units, opts: AiOpts & { audioPath?: string }, onStep: (step: string) => void = () => {}): Promise<SelectsResult> {
-  const { job } = await call<{ job: string }>('/jobs/selects', { units, model: claudeModel().id, api_key: opts.apiKey || undefined, audio_path: opts.audioPath }, 30_000)
+  const { job } = await call<{ job: string }>('/jobs/selects', { units, provider: opts.provider, model: modelFor(opts.provider), api_key: opts.apiKey || undefined, audio_path: opts.audioPath }, 30_000)
   const deadline = Date.now() + 60 * 60_000
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 2500))
@@ -122,4 +127,4 @@ export async function findSelects(units: Units, opts: AiOpts & { audioPath?: str
 }
 
 export const makeChapters = (units: Units, opts: AiOpts) =>
-  call<ChaptersResult>('/chapters', { units, model: claudeModel().id, api_key: opts.apiKey || undefined }, 10 * 60_000)
+  call<ChaptersResult>('/chapters', { units, provider: opts.provider, model: modelFor(opts.provider), api_key: opts.apiKey || undefined }, 10 * 60_000)

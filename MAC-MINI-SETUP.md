@@ -64,10 +64,9 @@ Ollama runs a free AI model on the Mac itself, with no API key and no internet.
 1. Download and install it from [ollama.com/download](https://ollama.com/download).
 2. Get the model RoughCut used: `ollama pull qwen3:8b`.
 
-Two things to know before relying on it:
+3. In RoughCut's **Setup** tab, set **AI → Model** to Ollama. Claude stays the default until you change it, and cold opens always use Claude.
 
-- **The current build only uses Claude.** The Ollama option was removed in commit `d697e1b`, so RoughCut needs the option back before it can use Ollama.
-- **qwen3:8b scored lowest in testing.** On the Kate Courtney episode it found none of the editor's two published Shorts; Claude Sonnet found one.
+qwen3:8b scored lowest in testing: on the Kate Courtney episode it found none of the editor's two published Shorts, while Claude Sonnet found one.
 
 Ollama's Mac app starts at login by default. Turn that off in its settings to keep to "nothing runs in the background".
 
