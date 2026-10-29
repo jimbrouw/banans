@@ -501,6 +501,19 @@ wheels = [
 ]
 
 [[package]]
+name = "lucidlink"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e5/c1/029a9b012d6e590eecc81f58fff9be4dc5e654a0ce0480af4f0e41ba34e6/lucidlink-1.0.1-py3-none-macosx_12_0_universal2.whl", hash = "sha256:dfaf8c70e98785b0c195f04fed0776a5c03f4ea26c31075faf524cdf99cdca74", size = 18628141, upload-time = "2026-10-24T16:13:11.44Z" },
+    { url = "https://files.pythonhosted.org/packages/28/a7/388ef82846a94061d2f804034e5a1b9adb5e20d36f15bb23c06d1a430c18/lucidlink-1.0.1-py3-none-manylinux_2_35_x86_64.whl", hash = "sha256:f8983498a2c069875a22e90110dc2a8d8107879520c2a161088847df9a58f9e0", size = 16855017, upload-time = "2026-10-24T16:13:18.574Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/d6/da90c46ba10ad726d6e5cb8fa5e6e5f7da9f1092ce30c77e84da35f595d6/lucidlink-1.0.1-py3-none-win_amd64.whl", hash = "sha256:35d2843698ce1e6190be7b668e3ac1774a0c0e7feac6b97e0ac52df113d1071c", size = 28984628, upload-time = "2026-10-24T16:13:23.094Z" },
+]
+
+[[package]]
 name = "markupsafe"
 version = "3.0.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1200,9 +1213,12 @@ dependencies = [
     { name = "anthropic" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "lucidlink" },
     { name = "mlx-whisper" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "uvicorn" },
 ]
 
@@ -1217,8 +1233,10 @@ requires-dist = [
     { name = "anthropic", specifier = ">=1.17.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "lucidlink", specifier = ">=1.0.1" },
     { name = "mlx-whisper", specifier = ">=0.4" },
     { name = "numpy", specifier = ">=2.4.6" },
+    { name = "scipy", specifier = ">=1.14.0" },
     { name = "uvicorn", specifier = ">=0.32" },
 ]
 

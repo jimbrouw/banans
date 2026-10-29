@@ -28,6 +28,7 @@ The first `uv run` installs dependencies. The first transcription downloads the 
 | `RC_ENGINE_PORT` | `7317` | Port. If you change it, change `ENGINE_URL` in `src/engineClient.ts` and the manifest domain too. |
 | `RC_WHISPER_MODEL` | `mlx-community/whisper-large-v3-turbo` | Any mlx-community whisper repo. `whisper-tiny` is useful for quick tests. |
 | `RC_ENGINE_IDLE` | `600` | Seconds without requests before an on-demand engine quits. |
+| `RC_SELECTS_HINTS` | `1` | `0` turns off the pacing and loudness hints added to each selects chunk (`signals.py`), to compare picks in the eval. |
 | `RC_ENGINE_CACHE` | `~/Library/Caches/roughcut-engine` | Result cache and extracted WAVs. |
 
 ## API
@@ -38,7 +39,7 @@ The first `uv run` installs dependencies. The first transcription downloads the 
 | `POST /silences` | `{path, noise_db=-35, min_silence=0.5}` | `{duration, silences:[{start,end}]}` in seconds |
 | `POST /transcribe` | `{path, model?, language?}` | `{model, language, segments:[{start,end,text}], words:[{text,start,end,prob,filler,segment}]}` |
 | `POST /levels` | `{path, channel?, rate=10}` | `{rate, channel, duration, db:[...]}`: loudness per 1/rate s, for Podcast Mode's mic fallback |
-| `POST /selects` | `{units, speakers?, provider, api_key?, audio_path?, count=5}` | `{model, clips:[{rank,title,title_check,type,idea,opening_line,why,pieces,duration,hook_pulled_forward,hook_score,energy}], proposed, valid, shortlisted}` |
+| `POST /selects` | `{units, speakers?, provider, api_key?, audio_path?, count=5}` | `{model, clips:[{rank,title,title_check,type,idea,opening_line,why,pieces,duration,hook_pulled_forward,weak_opening,hook_score,energy}], proposed, valid, shortlisted}`. Before ranking, code moves a clip's opening back (up to 2 lines) when it starts on a filler, an agreement, a pronoun or a back-reference, and moves its ending to a full sentence. `weak_opening` says why when the opening is still weak (the clip is kept, the panel shows a chip), else `null`. |
 | `POST /jobs/selects` | same as `/selects` | `{job}`; poll `GET /jobs/{id}` → `{status, step, result, error, seconds}` (use this from clients: a local model takes minutes) |
 | `POST /chapters` | `{units, provider, api_key?}` | `{model, valid, chapters:[{start,label,title,seconds}], text}` |
 | `POST /edit` | `{units:[{id,start,end,text}], provider:"claude"\|"ollama" (default claude), api_key?, instruction?, prefer_last_take}` | `{provider, model, removals:[{start,end,ids,reason,note}], keep_ids}` |

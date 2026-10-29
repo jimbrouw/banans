@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from roughcut_engine.app import app
 from roughcut_engine.edit import EditError, Unit
 from roughcut_engine.selects import (CANDIDATE_SYSTEM, CHAPTER_SYSTEM, JUDGE_SYSTEM, build, run_chapters,
-                                     run_selects)
+                                     run_selects, weak_opening)
 
 # 60 sentences, 3 s each with a 0.3 s breath: line i runs i*3.3 .. i*3.3+3.
 UNITS = [Unit(i, round(i * 3.3, 2), round(i * 3.3 + 3, 2), f"Line {i} about topic {i // 10}.") for i in range(60)]
@@ -37,6 +37,71 @@ def test_build_pulls_a_hook_forward():
     assert c.pieces[0] == (66.0, 69.0) and c.pieces[1][0] == 33.0
     far = build(cand(0, 8, hook=40), BY_ID)  # 100+ s away: not the same passage
     assert far.hook is None and far.pieces[0][0] == 0.0
+
+
+@pytest.mark.parametrize("text", [
+    "Um, so the thing is this.", "Like, honestly it was wild.", "Well, I guess so.",
+    "Yeah, exactly.", "Right, and that's why.", "He told me never to do it.", "They never called back.",
+    "As I said before, it matters.", "Going back to that point, it matters.", "We talked about this before we started recording.",
+])
+def test_weak_openings_are_caught(text):
+    assert weak_opening(text)
+
+
+@pytest.mark.parametrize("text", [
+    "I never told anyone this.", "Likewise, the team agreed.", "Wellington is where it started.",
+    "Rightly so, nobody believed her.", "The biggest mistake was hiring too fast.", "Then she quit.",
+])
+def test_good_openings_are_left_alone(text):
+    assert not weak_opening(text)
+
+
+def with_texts(**changes):
+    units = {u.id: u for u in UNITS}
+    for i, text in changes.items():
+        u = units[int(i[1:])]
+        units[u.id] = Unit(u.id, u.start, u.end, text)
+    return units
+
+
+def test_weak_opening_moves_back_to_a_full_sentence():
+    c = build(cand(10, 18), with_texts(u10="Yeah, exactly that."))
+    assert c.first == 9 and not c.weak_opening and c.pieces[0][0] == BY_ID[9].start
+    assert c.proposed == (10, 18)
+    # Two lines back is as far as it goes: still weak means keep the clip as the model chose it and flag it.
+    stuck = build(cand(10, 18), with_texts(u10="Yeah, exactly.", u9="Right.", u8="Totally."))
+    assert stuck.first == 10 and stuck.weak_opening
+
+
+def test_weak_opening_does_not_cross_a_long_pause_or_the_length_limit():
+    units = with_texts(u10="He said no.")
+    units[9] = Unit(9, 20.0, 23.0, "Earlier, after a pause.")        # 10 s before line 10 starts
+    assert build(cand(10, 18), units).first == 10
+    c = build(cand(10, 27), with_texts(u10="He said no."))            # 18 lines is 59 s: one more would pass 60
+    assert c.first == 10 and c.weak_opening
+
+
+def test_a_pulled_forward_hook_is_flagged_not_moved():
+    c = build(cand(10, 18, hook=20), with_texts(u20="Yeah, you will never guess why."))
+    assert c.first == 10 and c.hook == 20 and c.weak_opening
+
+
+def test_ending_runs_on_to_a_full_sentence():
+    c = build(cand(10, 18), with_texts(u18="and then she said that"))
+    assert c.last == 19
+
+
+def test_ending_goes_back_when_the_speech_stops():
+    units = with_texts(u18="and then she said that")
+    units[19] = Unit(19, 80.0, 83.0, "After a long pause.")           # 14 s gap: not the same breath
+    c = build(cand(10, 18), units)
+    assert c.last == 17
+
+
+def test_unpunctuated_transcripts_keep_their_endings():
+    units = {u.id: Unit(u.id, u.start, u.end, u.text.rstrip(".")) for u in UNITS}
+    c = build(cand(10, 18), units)
+    assert c.last == 18
 
 
 def fake_ask(candidates, chapter_titles=None):

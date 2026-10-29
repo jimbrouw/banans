@@ -64,11 +64,17 @@ class UxpPremiereAdapter implements PremiereAdapter {
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
   }
 
+  /** Open the sequence as its own Timeline tab (so it isn't hidden behind the current one) and make it active. */
+  private async showSequence(project: Project, sequence: Sequence): Promise<boolean> {
+    await project.openSequence(sequence)
+    return project.setActiveSequence(sequence)
+  }
+
   /** Open a sequence in the Timeline, making it Premiere's active sequence. */
   async activateSequence(id: string): Promise<void> {
     const project = await this.ppro.Project.getActiveProject()
     if (!project) throw new Error('Open a Premiere project before using RoughCut.')
-    if (!await project.setActiveSequence(await this.findSequenceByGuid(project, id))) throw new Error('Premiere could not open that sequence.')
+    if (!await this.showSequence(project, await this.findSequenceByGuid(project, id))) throw new Error('Premiere could not open that sequence.')
   }
 
   /** Call back whenever Premiere activates a sequence. Returns a function that stops listening. */
@@ -208,7 +214,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     if (!roughCut) throw new Error('Premiere cloned the sequence but did not return the new sequence.')
     const name = await this.nameGenerated(project, await roughCut.getProjectItem(), sequence.name, run?.action ?? 'Review Markers', run?.detail ?? `${decisions.length} markers`)
     await this.writeMarkers(project, roughCut, decisions, 'Add RoughCut markers')
-    if (!await project.setActiveSequence(roughCut)) throw new Error('The rough cut was created, but Premiere could not open it.')
+    if (!await this.showSequence(project, roughCut)) throw new Error('The rough cut was created, but Premiere could not open it.')
     return name
   }
 
@@ -276,7 +282,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
 
     // Read total timeline length in frames.
     const endTime = await sequence.getEndTime()
-    const totalFrames = this.tickToFrame(endTime, fr)
+    let totalFrames = this.tickToFrame(endTime, fr)
 
     const videoTrackCount = await sequence.getVideoTrackCount()
     const sources: CameraSource[] = []
@@ -334,6 +340,12 @@ class UxpPremiereAdapter implements PremiereAdapter {
       })
     }
 
+    // The sequence end can run past the video (a longer audio clip). Cutting past the
+    // shortest camera would have no media, so the cut range ends where every camera still does.
+    for (const s of sources) {
+      totalFrames = Math.min(totalFrames, s.clipStartFrame + s.clipOutFrame - s.clipInFrame)
+    }
+
     const targetTrackIndex = selectOutputTrack(
       sources,
       videoTrackCount,
@@ -363,6 +375,60 @@ class UxpPremiereAdapter implements PremiereAdapter {
       totalFrames,
       frameRate: frameRateValue,
     }
+  }
+
+  /**
+   * Which audio track holds each camera's own audio (matched by media file), so blading
+   * can rewrite that audio in place. Overwriting with audio index -1 lands the camera's
+   * audio on the default track, which replaces the user's mic recording on A1.
+   * A camera whose audio isn't in the sequence is left out (callers fall back to -1).
+   */
+  private async cameraAudioTracks(seq: Sequence, sources: CameraSource[]): Promise<Map<number, number>> {
+    const found = new Map<number, number>()
+    const count = await seq.getAudioTrackCount()
+    for (let a = 0; a < count && found.size < sources.length; a++) {
+      const items = await (await seq.getAudioTrack(a)).getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+      if (items.length === 0) continue
+      const path = await (this.ppro.ClipProjectItem.cast(await items[0].getProjectItem()) as ClipProjectItem)
+        .getMediaFilePath()
+      const src = sources.find((s) => s.mediaPath === path)
+      if (src && !found.has(src.camera)) found.set(src.camera, a)
+    }
+    return found
+  }
+
+  /**
+   * Single-clip audio tracks that aren't a camera's own audio, i.e. the separately recorded
+   * mic WAVs. They are blades-only targets: split at the cuts, content unchanged.
+   */
+  private async micAudioTracks(seq: Sequence, sources: CameraSource[]) {
+    const mics: {
+      index: number
+      projItem: ProjectItem
+      clip: ClipProjectItem
+      startTicks: bigint
+      endTicks: bigint
+      inTicks: bigint
+    }[] = []
+    const count = await seq.getAudioTrackCount()
+    for (let a = 0; a < count; a++) {
+      const items = await (await seq.getAudioTrack(a)).getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+      if (items.length !== 1) continue
+      const projItem = await items[0].getProjectItem()
+      const clip = this.ppro.ClipProjectItem.cast(projItem) as ClipProjectItem
+      if (await clip.isSequence()) continue
+      const path = await clip.getMediaFilePath()
+      if (sources.some((s) => s.mediaPath === path)) continue
+      mics.push({
+        index: a,
+        projItem,
+        clip,
+        startTicks: BigInt((await items[0].getStartTime()).ticks),
+        endTicks: BigInt((await items[0].getEndTime()).ticks),
+        inTicks: BigInt((await items[0].getInPoint()).ticks),
+      })
+    }
+    return mics
   }
 
   async applyCutMap(
@@ -491,6 +557,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
       }
       const needsBlade = intervals.length > 1
       let bladed = false
+      const savedMics = new Map<number, { inTicks: string; outTicks: string }>()
       const restoreFailures: string[] = []
       try {
         // Cache live handles once. lockedAccess keeps them valid across transactions
@@ -502,6 +569,12 @@ class UxpPremiereAdapter implements PremiereAdapter {
         const cloneSeq = await this.findSequenceByGuid(project, cloneId)
         const editor = await this.ppro.SequenceEditor.getEditor(cloneSeq)
         const origSeq = await this.findSequenceByGuid(project, sequenceId)
+        const micTracks = needsBlade ? await this.micAudioTracks(origSeq, det.sources) : []
+        for (const mic of micTracks) {
+          const inP = await mic.clip.getInPoint(this.ppro.Constants.MediaType.AUDIO)
+          const outP = await mic.clip.getOutPoint(this.ppro.Constants.MediaType.AUDIO)
+          savedMics.set(mic.index, { inTicks: inP.ticks, outTicks: outP.ticks })
+        }
         const camItem = new Map<number, ProjectItem>()
         const camClip = new Map<number, ClipProjectItem>()
         for (const src of det.sources) {
@@ -513,6 +586,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
         }
 
         if (needsBlade) {
+          const audioTrack = await this.cameraAudioTracks(origSeq, det.sources)
           for (const src of det.sources) {
             const clip = camClip.get(src.camera)!
             const projItem = camItem.get(src.camera)!
@@ -530,10 +604,38 @@ class UxpPremiereAdapter implements PremiereAdapter {
               bladed = true
               const writeOk = this.tx(
                 project,
-                (c) => c.addAction(editor.createOverwriteItemAction(projItem, toTick(iv.startFrame), src.vIndex, -1)),
+                (c) => c.addAction(editor.createOverwriteItemAction(projItem, toTick(iv.startFrame), src.vIndex, audioTrack.get(src.camera) ?? -1)),
                 `Blade cam${src.camera} @${iv.startFrame}`,
               )
               if (!writeOk) throw new Error(`Premiere rejected blade for camera ${src.camera} at frame ${iv.startFrame}.`)
+            }
+          }
+
+          // Split the mic WAVs at the same cut points, each rewritten on its own track.
+          for (const mic of micTracks) {
+            for (const iv of intervals) {
+              const ivStart = BigInt(toTick(iv.startFrame).ticks)
+              const ivEnd = BigInt(toTick(iv.endFrame).ticks)
+              if (ivStart < mic.startTicks || ivEnd > mic.endTicks) continue
+              const sIn = ivStart - mic.startTicks + mic.inTicks
+              const sOut = ivEnd - mic.startTicks + mic.inTicks
+              phase = `blade mic A${mic.index + 1} @${iv.startFrame}`
+              const setOk = this.tx(
+                project,
+                (c) => c.addAction(mic.clip.createSetInOutPointsAction(
+                  this.ppro.TickTime.createWithTicks(sIn.toString()),
+                  this.ppro.TickTime.createWithTicks(sOut.toString()),
+                )),
+                `Set in/out mic A${mic.index + 1}`,
+              )
+              if (!setOk) throw new Error(`Premiere rejected in/out for mic on A${mic.index + 1}.`)
+              bladed = true
+              const writeOk = this.tx(
+                project,
+                (c) => c.addAction(editor.createOverwriteItemAction(mic.projItem, toTick(iv.startFrame), 0, mic.index)),
+                `Blade mic A${mic.index + 1} @${iv.startFrame}`,
+              )
+              if (!writeOk) throw new Error(`Premiere rejected blade for mic on A${mic.index + 1} at frame ${iv.startFrame}.`)
             }
           }
         }
@@ -602,6 +704,23 @@ class UxpPremiereAdapter implements PremiereAdapter {
                 restoreFailures.push(`Camera ${src.camera}: ${e instanceof Error ? e.message : String(e)}`)
               }
             }
+            for (const [index, saved] of savedMics) {
+              try {
+                const items = await (await rs.getAudioTrack(index)).getTrackItems(this.ppro.Constants.TrackItemType.CLIP, false)
+                const freshClip = this.ppro.ClipProjectItem.cast(await items[0].getProjectItem()) as ClipProjectItem
+                const ok = this.tx(
+                  rp,
+                  (c) => c.addAction(freshClip.createSetInOutPointsAction(
+                    this.ppro.TickTime.createWithTicks(saved.inTicks),
+                    this.ppro.TickTime.createWithTicks(saved.outTicks),
+                  )),
+                  `Restore in/out mic A${index + 1}`,
+                )
+                if (!ok) restoreFailures.push(`Mic A${index + 1}: transaction rejected`)
+              } catch (e) {
+                restoreFailures.push(`Mic A${index + 1}: ${e instanceof Error ? e.message : String(e)}`)
+              }
+            }
           }
         }
       }
@@ -615,7 +734,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
 
       // 9. Activate the clone.
       phase = 'activate clone'
-      await project.setActiveSequence(await this.findSequenceByGuid(project, cloneId))
+      await this.showSequence(project, await this.findSequenceByGuid(project, cloneId))
 
       return cloneName
     } catch (e) {
@@ -816,7 +935,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
     }
 
     // 8. Activate the clone
-    await project.setActiveSequence(clone)
+    await this.showSequence(project, clone)
 
     return cloneName
   }
@@ -867,7 +986,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
 
     // Activate the subsequence so detection + cutting target it.
     const subId = sub.guid.toString()
-    await project.setActiveSequence(await this.findSequenceByGuid(project, subId))
+    await this.showSequence(project, await this.findSequenceByGuid(project, subId))
 
     // No shot plan → flat lift, done.
     if (!shots || shots.length === 0) return name
@@ -966,6 +1085,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
       // Blade every camera at every interval boundary it covers, so all tracks
       // share aligned segments for the disable pass.
       if (needsBlade) {
+        const audioTrack = await this.cameraAudioTracks(seq, sources)
         for (const src of sources) {
           const clip = camClip.get(src.camera)!
           const projItem = camItem.get(src.camera)!
@@ -982,7 +1102,7 @@ class UxpPremiereAdapter implements PremiereAdapter {
             bladed = true
             const writeOk = this.tx(
               project,
-              (c) => c.addAction(editor.createOverwriteItemAction(projItem, toTick(iv.startFrame), src.vIndex, -1)),
+              (c) => c.addAction(editor.createOverwriteItemAction(projItem, toTick(iv.startFrame), src.vIndex, audioTrack.get(src.camera) ?? -1)),
               `Blade cam${src.camera} @${iv.startFrame}`,
             )
             if (!writeOk) throw new Error(`Premiere rejected blade for camera ${src.camera} at frame ${iv.startFrame}.`)

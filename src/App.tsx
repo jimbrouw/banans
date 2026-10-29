@@ -153,7 +153,7 @@ export default function App() {
         </div>
         <div {...show('clips')}>
           <div className="tab-body">
-            <SelectsPanel key={`selects-${sequence.id}`} onCreated={setLastCreated} />
+            <SelectsPanel key={`selects-${sequence.id}`} sequenceId={sequence.id} onCreated={setLastCreated} />
             <div className="block">
               <Options label="Review markers" summary="Off. Turn on for the full marker list and cold opens">
                 <AnalysisPanel settings={settings} onPatch={patchSettings} busy={busy} buttonLabel={analyseLabel} error={error} onAnalyse={runAnalysis} hasResults={decisions.length > 0} />

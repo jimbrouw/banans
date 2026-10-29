@@ -6,6 +6,7 @@ export const SETTINGS = {
   aiProvider: 'roughcut.aiProvider',
   tab: 'roughcut.tab',
   claudeModel: 'roughcut.claudeModel',
+  selects: 'roughcut.selects',
 } as const
 
 // Cost: Claude Sonnet at low effort (the default: it found the editor's Short in the eval) or Haiku at high effort. Never Opus.

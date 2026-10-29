@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AlertTriangle, ListOrdered, Play, Scissors, Sparkles } from 'lucide-react'
 import { Press } from '../ui'
 import { errorMessage, formatTime } from '../uiHelpers'
@@ -10,25 +10,48 @@ import { getPremiereTranscriptWords, getPrimaryAudioClips, setPlayhead } from '.
 import { buildClipsViaXml } from '../xmlCutHost'
 import { demoSelects } from '../reviewDemo'
 import { logged } from '../runLog'
-import { aiProvider, NO_CLAUDE_KEY, readSetting, SETTINGS } from '../settings'
+import { aiProvider, NO_CLAUDE_KEY, readSetting, SETTINGS, writeSetting } from '../settings'
 import { isPremiereHost } from '../premiereAdapter'
 
 type Status = 'idle' | 'reading' | 'thinking' | 'building' | 'chapters'
 const typeLabel: Record<SelectClip['type'], string> = { story: 'Story', opinion: 'Opinion', tip: 'Tip', moment: 'Moment' }
 
+// The AI's picks cost credits, so they are kept per sequence (a few most recent) and
+// come back when the panel is rebuilt, e.g. after switching sequences or reloading.
+interface SavedSelects { clips: SelectClip[]; dropped: number[]; note: string; chapters: ChaptersResult | null }
+const SAVED_KEEP = 4
+const savedKey = (id: string) => `${SETTINGS.selects}.${id}`
+
+function loadSelects(id: string): SavedSelects | null {
+  try { return JSON.parse(readSetting(savedKey(id)) || 'null') as SavedSelects | null } catch { return null }
+}
+
+function saveSelects(id: string, data: SavedSelects) {
+  writeSetting(savedKey(id), JSON.stringify(data))
+  let index: string[] = []
+  try { index = JSON.parse(readSetting(`${SETTINGS.selects}.index`) || '[]') as string[] } catch { /* start a new index */ }
+  index = [...index.filter((i) => i !== id), id]
+  for (const old of index.slice(0, -SAVED_KEEP)) { try { localStorage.removeItem(savedKey(old)) } catch { /* nothing to remove */ } }
+  writeSetting(`${SETTINGS.selects}.index`, JSON.stringify(index.slice(-SAVED_KEEP)))
+}
+
 /**
  * The Clips tab: the few clips a senior podcast clip producer would cut, not a pile
  * of markers. Reads the whole episode, proposes five, builds the ones you keep.
  */
-export function SelectsPanel({ onCreated }: { onCreated: (name: string) => void }) {
+export function SelectsPanel({ sequenceId, onCreated }: { sequenceId: string; onCreated: (name: string) => void }) {
+  const saved = useState(() => loadSelects(sequenceId))[0]
   const [status, setStatus] = useState<Status>('idle')
   const [step, setStep] = useState('')
   const [error, setError] = useState('')
   const [words, setWords] = useState<ReviewWord[]>([])
-  const [clips, setClips] = useState<SelectClip[]>([])
-  const [dropped, setDropped] = useState<Set<number>>(new Set())
-  const [note, setNote] = useState('')
-  const [chapters, setChapters] = useState<ChaptersResult | null>(null)
+  const [clips, setClips] = useState<SelectClip[]>(saved?.clips ?? [])
+  const [dropped, setDropped] = useState<Set<number>>(new Set(saved?.dropped ?? []))
+  const [note, setNote] = useState(saved?.note ?? '')
+  const [chapters, setChapters] = useState<ChaptersResult | null>(saved?.chapters ?? null)
+  useEffect(() => {
+    if (clips.length || chapters) saveSelects(sequenceId, { clips, dropped: [...dropped], note, chapters })
+  }, [sequenceId, clips, dropped, note, chapters])
   const busy = status !== 'idle'
   const provider = aiProvider
   const apiKey = () => readSetting(SETTINGS.claudeKey)
@@ -81,15 +104,17 @@ export function SelectsPanel({ onCreated }: { onCreated: (name: string) => void 
     const kept = clips.filter((c) => !dropped.has(c.rank))
     try {
       setError(''); setStatus('building')
+      // Restored picks have no words yet: re-read the transcript from Premiere (free, no AI).
+      const w = words.length || !isPremiereHost() ? words : (await episodeWords()).words
       const names = await logged('Build clips', { kept: `${kept.length} of ${clips.length}`, dropped: clips.filter((c) => dropped.has(c.rank)).map((c) => c.title).join(' | ') },
-        () => buildClipsViaXml(kept.map((c) => ({ title: c.title, pieces: withoutFillers(c.pieces, words) }))),
+        () => buildClipsViaXml(kept.map((c) => ({ title: c.title, pieces: withoutFillers(c.pieces, w) }))),
         (n) => (n ? n.join(' | ') : 'demo'))
       if (names?.length) onCreated(names[names.length - 1])
-      setNote(names ? `Built ${names.length} clip sequences in the Clips bin.` : `Demo: would build ${kept.length} clip sequences in the Clips bin.`)
+      setNote(names ? `Built ${names.length} clip sequences in the RoughCut bin, under Clips.` : `Demo: would build ${kept.length} clip sequences in the RoughCut bin, under Clips.`)
     } catch (reason) {
       setError(errorMessage(reason))
     } finally {
-      setStatus('idle')
+      setStatus('idle'); setStep('')
     }
   }
 
@@ -135,7 +160,8 @@ export function SelectsPanel({ onCreated }: { onCreated: (name: string) => void 
               <div className="clip-foot">
                 <Press className="text-button" onClick={() => setPlayhead(c.pieces[0].start).catch(() => {})}><Play size={12} /> {formatTime(c.pieces[0].start)}</Press>
                 <span className="clip-hook" title={`Hook score ${c.hook_score.verdict}/100. To strengthen it: ${c.hook_score.fix}`}>Hook {c.hook_score.verdict}</span>
-                {c.title_check.issues[0] && <span className="clip-hook" title={c.title_check.issues.join('\n')}>Title note</span>}
+                {c.weak_opening && <span className="clip-hook" title={`The first line ${c.weak_opening}. Check the start before you build.`}>Weak opening</span>}
+                {c.title_check.issues[0] &&<span className="clip-hook" title={c.title_check.issues.join('\n')}>Title note</span>}
                 <Press className={`clip-keep ${dropped.has(c.rank) ? '' : 'on'}`} onClick={() => toggle(c.rank)}>{dropped.has(c.rank) ? 'Dropped' : 'Keep'}</Press>
               </div>
             </div>
@@ -144,7 +170,7 @@ export function SelectsPanel({ onCreated }: { onCreated: (name: string) => void 
         <Press className="primary results-action" disabled={busy || !keptCount} onClick={build}>
           <Scissors size={17} />{status === 'building' ? 'Building…' : `Build ${keptCount} clip sequence${keptCount === 1 ? '' : 's'}`}
         </Press>
-        <p className="footnote">Each goes in the Clips bin as its own sequence, with filler words cut out. Your episode stays as it is.</p>
+        <p className="footnote">Each goes in its own Clips folder (inside the RoughCut bin) as its own sequence, with filler words cut out. Your episode stays as it is.</p>
       </>}
 
       <div className="chapters-block">

@@ -156,3 +156,29 @@ def job_status(job_id: str) -> dict:
     if not job:
         raise HTTPException(404, "No such job. The engine may have restarted; start it again.")
     return job
+
+
+@app.get("/ingest/batches")
+def list_ingest_batches() -> dict:
+    """Lists batches discovered and processed by the LucidLink watcher daemon."""
+    from dataclasses import asdict
+    from .lucid_watcher import StateStore
+
+    store = StateStore()
+    batches = store.load()
+    return {"batches": [asdict(b) for b in batches.values()]}
+
+
+@app.post("/ingest/batches/{key}/imported")
+def mark_batch_imported(key: str) -> dict:
+    """Notified by Premiere UXP panel when the XML has been imported to the project."""
+    from .lucid_watcher import StateStore, State
+
+    store = StateStore()
+    batches = store.load()
+    if key not in batches:
+        raise HTTPException(404, f"Batch '{key}' not found.")
+    b = batches[key]
+    b.state = State.IMPORTED
+    store.save(b)
+    return {"ok": True, "key": key, "state": b.state.value}

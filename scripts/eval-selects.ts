@@ -25,6 +25,7 @@ const provider = arg('provider', 'claude')!
 // Claude: Sonnet 5.5 (low effort) by default, or --model claude-haiku-5-5 (high effort). Never Opus.
 const model = provider === 'claude' ? arg('model', 'claude-sonnet-5-5') : undefined
 const audio = arg('audio')
+const engine = arg('engine', 'http://localhost:7317')!
 const mmss = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`
 
 const transcript = JSON.parse(readFileSync(join(episodeDir, 'transcript.json'), 'utf8')) as { words: EngineWord[] }
@@ -34,7 +35,7 @@ const references = readdirSync(refsDir).filter((f) => f.endsWith('.xml')).map((f
 
 console.log(`${units.length} sentence lines, ${references.length} published clips to compare against. Asking ${provider}…`)
 // Runs as an engine job: a local model takes longer than fetch will wait for one response.
-const started = await fetch('http://localhost:7317/jobs/selects', {
+const started = await fetch(`${engine}/jobs/selects`, {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ units, provider, model, api_key: process.env.ANTHROPIC_API_KEY, audio_path: audio }),
@@ -46,7 +47,7 @@ let out: Out | null = null
 let lastStep = ''
 while (!out) {
   await new Promise((r) => setTimeout(r, 3000))
-  const s = await (await fetch(`http://localhost:7317/jobs/${startBody.job}`)).json() as { status: string; step: string; result: Out | null; error: string | null; seconds: number }
+  const s = await (await fetch(`${engine}/jobs/${startBody.job}`)).json() as { status: string; step: string; result: Out | null; error: string | null; seconds: number }
   if (s.status === 'error') { console.error(`Engine: ${s.error}`); process.exit(1) }
   if (s.status === 'done') out = s.result
   else if (s.step !== lastStep) { lastStep = s.step; console.log(`  [${s.seconds}s] ${s.step}`) }

@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { XMLParser } from 'fast-xml-parser'
 import { describe, expect, it } from 'vitest'
-import { applyCutsToXml, applyPiecesToXml, keepRanges } from './xmlCut'
+import { applyCutsToXml, applyPiecesToXml, keepRanges, mergeSequencesXml } from './xmlCut'
 
 // 25 fps, 100 frames. V1: clip A 0–60 (src 1000–1060) + transition + clip B 60–100 (src 0–40, start -1).
 // A1: audio for A, linked to the video. One sequence marker at frame 30.
@@ -221,5 +221,28 @@ describe.skipIf(!existsSync(REAL))('applyCutsToXml on a real Premiere export', (
   it('has unique clip ids', () => {
     const ids = all.map((c) => c['@_id'])
     expect(new Set(ids).size).toBe(ids.length)
+  })
+})
+
+describe('mergeSequencesXml', () => {
+  const a = applyPiecesToXml(SAMPLE, [{ start: 0, end: 1 }], 'Clip A').xml
+  const b = applyPiecesToXml(SAMPLE, [{ start: 1, end: 2 }], 'Clip B').xml
+  const merged = mergeSequencesXml([a, b])
+  const doc = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' }).parse(merged)
+
+  it('holds both sequences in one xmeml', () => {
+    expect(doc.xmeml.sequence.map((s: { name: string }) => s.name)).toEqual(['Clip A', 'Clip B'])
+  })
+
+  it('gives every sequence and clip item its own id, and keeps links pointing inside their sequence', () => {
+    const ids = [...merged.matchAll(/<(?:sequence|clipitem)\b[^>]*\bid="([^"]*)"/g)].map((m) => m[1])
+    expect(new Set(ids).size).toBe(ids.length)
+    const second = merged.slice(merged.indexOf('Clip B'))
+    for (const [, ref] of second.matchAll(/<linkclipref>([^<]*)</g)) expect(ids).toContain(ref)
+  })
+
+  it('keeps file ids shared so the media imports once', () => {
+    expect(merged.match(/<file id="file-1"/g)!.length).toBeGreaterThan(1)
+    expect(merged).not.toContain('file-1-c2')
   })
 })

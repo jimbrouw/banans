@@ -99,6 +99,8 @@ export interface SelectClip {
   pieces: SilenceRange[]
   duration: number
   hook_pulled_forward: boolean
+  /** Why the first line may not stand alone (filler, agreement, pronoun, back-reference); null when it does. */
+  weak_opening?: string | null
   hook_score: { verdict: number; band: string; weakest: string; fix: string; formula: string }
   energy: number | null
 }

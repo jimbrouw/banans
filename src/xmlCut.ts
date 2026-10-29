@@ -313,3 +313,23 @@ function transformXml(xml: string, makeKeeps: (fps: number, totalFrames: number)
     stats: { fps, originalFrames, newFrames, removedFrames: originalFrames - newFrames, clipPieces, transitionsDropped, markersDropped, unplaced },
   }
 }
+
+/**
+ * One xmeml file holding every sequence, so Premiere imports the media they share once
+ * instead of once per sequence. Later sequences get their own item ids; file ids stay shared.
+ */
+export function mergeSequencesXml(xmls: string[]): string {
+  const [first, ...rest] = xmls
+  const end = first.lastIndexOf('</xmeml>')
+  if (end < 0) throw new Error('Not an FCP XML (xmeml) file.')
+  const extra = rest.map((xml, i) => {
+    const from = xml.indexOf('<sequence')
+    const to = xml.lastIndexOf('</sequence>')
+    if (from < 0 || to < 0) throw new Error('The XML has no sequence.')
+    const tag = `-c${i + 2}`
+    return xml.slice(from, to + '</sequence>'.length)
+      .replace(/(<(?:sequence|clipitem|generatoritem)\b[^>]*?\bid=")([^"]*)"/g, `$1$2${tag}"`)
+      .replace(/(<linkclipref>)([^<]*)(<\/linkclipref>)/g, `$1$2${tag}$3`)
+  })
+  return first.slice(0, end) + extra.join('\n') + first.slice(end)
+}

@@ -17,12 +17,14 @@ The model only ever names line ids; every time and duration is worked out here.
 """
 
 import math
+import os
 import re
 import statistics
 from dataclasses import dataclass, field
 from typing import Callable
 
 from .edit import EditError, Unit, mmss
+from .signals import hint_block
 from .yt import hookscore, title as title_lint
 
 Ask = Callable[[str, str, dict], dict]
@@ -32,6 +34,16 @@ MIN_SECONDS, MAX_SECONDS = 20.0, 60.0
 HOOK_REACH = 45.0      # a pulled-forward hook line must come from at most this far after the passage
 CHUNK, OVERLAP = 90, 12   # small slices: an 8B model skims when given 25 minutes at once
 MAX_ROUNDS = 6
+HINTS = os.environ.get("RC_SELECTS_HINTS", "1") != "0"   # 0 turns the prompt hints off, to compare in the eval
+FLOWS = 1.5           # lines closer than this (seconds) are one stretch of speech
+MAX_STEPS = 2          # how far an opening or ending may move to land on a full sentence
+
+# A clip's first line must make sense to a stranger. Checked in code because the rubric alone doesn't hold.
+FILLER_OPEN = re.compile(r"^\W*((um+|uh+|er+|erm|hmm+)\b|(like|well|dude)\b\s*,)", re.I)
+AGREE_OPEN = re.compile(r"^\W*(yeah|yes|yep|yup|right|exactly|totally|absolutely|definitely|sure|true|correct|mm-?hmm|uh-?huh)\b", re.I)
+PRONOUN_OPEN = re.compile(r"^\W*(he|she|they|him|her|them|his|their)\b", re.I)
+BACK_REFERENCE = re.compile(r"\b(as (i|we) (said|mentioned|discussed)|like (i|we) (said|mentioned)|(i|we) (mentioned|talked about|were talking about)|going back to|that point|before we (started|began) recording)\b", re.I)
+SENTENCE_END = re.compile(r"[.?!…][\"')\]]*\s*$")
 
 CANDIDATE_SCHEMA = {
     "type": "object",
@@ -109,6 +121,8 @@ class Candidate:
     hook_score: dict = field(default_factory=dict)
     energy: float | None = None
     wins: int = 0
+    weak_opening: str = ""                    # why the opening may not stand alone; empty when it does
+    proposed: tuple[int, int] = (0, 0)        # the model's own first/last, before any adjustment
 
     @property
     def duration(self) -> float:
@@ -141,11 +155,67 @@ def build(raw: dict, by_id: dict[int, Unit]) -> Candidate | None:
     return check(raw, by_id)[0]
 
 
+def weak_opening(text: str) -> str:
+    """Why a line is a poor first line for a stranger, or "" if it is fine."""
+    if FILLER_OPEN.search(text):
+        return "starts on a filler word"
+    if AGREE_OPEN.search(text):
+        return "starts on an agreement, so it answers something outside the clip"
+    if PRONOUN_OPEN.search(text):
+        return "starts on a pronoun for someone the viewer hasn't met"
+    if BACK_REFERENCE.search(text[:80]):
+        return "refers back to something outside the clip"
+    return ""
+
+
+def ends_sentence(text: str) -> bool:
+    return bool(SENTENCE_END.search(text))
+
+
+def is_punctuated(by_id: dict[int, Unit]) -> bool:
+    """Transcripts without punctuation can't tell us where a sentence ends, so leave endings alone."""
+    return sum(ends_sentence(u.text) for u in by_id.values()) >= len(by_id) / 2
+
+
+def finish_ending(first: int, last: int, by_id: dict[int, Unit]) -> int:
+    """Move a clip's last line to the end of a sentence: on through the speech if it flows, else back."""
+    if ends_sentence(by_id[last].text) or not is_punctuated(by_id):
+        return last
+    end = last
+    for _ in range(MAX_STEPS):
+        nxt = by_id.get(end + 1)
+        if not nxt or nxt.start - by_id[end].end >= FLOWS or nxt.end - by_id[first].start > MAX_SECONDS:
+            break
+        end += 1
+        if ends_sentence(by_id[end].text):
+            return end
+    for back in range(last - 1, max(first, last - MAX_STEPS) - 1, -1):
+        if ends_sentence(by_id[back].text) and by_id[back].end - by_id[first].start >= MIN_SECONDS:
+            return back
+    return last
+
+
+def fix_opening(first: int, last: int, by_id: dict[int, Unit]) -> int:
+    """Move a clip's first line back to a full sentence when its opening needs the line before it."""
+    if not weak_opening(by_id[first].text):
+        return first
+    start = first
+    for _ in range(MAX_STEPS):
+        prev = by_id.get(start - 1)
+        if not prev or by_id[start].start - prev.end >= FLOWS or by_id[last].end - prev.start > MAX_SECONDS:
+            break
+        start -= 1
+        if not weak_opening(by_id[start].text):
+            return start
+    return first
+
+
 def check(raw: dict, by_id: dict[int, Unit]) -> tuple[Candidate | None, str]:
     """Like build, but also says why a proposal was dropped (for the eval)."""
     first, last, hook = raw.get("first"), raw.get("last"), raw.get("hook_line", -1)
     if not isinstance(first, int) or not isinstance(last, int) or first not in by_id or last not in by_id or last < first:
         return None, "line ids that don't exist"
+    proposed = (first, last)
     # A passage that stops before its payoff is a fragment: carry it on through the
     # following sentences while the speech flows (no long pause), up to the minimum.
     # (The editor's "going for it" clip ran on into its payoff; the model stopped at 18 s.)
@@ -154,12 +224,22 @@ def check(raw: dict, by_id: dict[int, Unit]) -> tuple[Candidate | None, str]:
            and by_id[last + 1].start - by_id[last].end < 1.5 and by_id[last + 1].end - by_id[first].start <= MAX_SECONDS):
         last += 1
         extended = True
-    run = [by_id[i] for i in range(first, last + 1) if i in by_id]
+    notes = ["extended to finish the thought"] if extended else []
+    ended = finish_ending(first, last, by_id)
+    if ended != last:
+        notes.append("ending moved to a full sentence")
+        last = ended
     hook_unit = by_id.get(hook) if isinstance(hook, int) and hook >= 0 else None
     if hook_unit and not (first <= hook_unit.id <= last or 0 <= hook_unit.start - by_id[last].end <= HOOK_REACH):
         hook_unit = None  # too far away to be the same passage
     if hook_unit and hook_unit.id == first:
         hook_unit = None  # already the opening
+    if not hook_unit:  # a pulled-forward hook is the opening, so there is no first line to move
+        opened = fix_opening(first, last, by_id)
+        if opened != first:
+            notes.append("opening moved back to a full sentence")
+            first = opened
+    run = [by_id[i] for i in range(first, last + 1) if i in by_id]
     rest = [u for u in run if not hook_unit or u.id != hook_unit.id]
     pieces: list[tuple[float, float]] = [(hook_unit.start, hook_unit.end)] if hook_unit else []
     for u in rest:  # contiguous runs of the remaining lines
@@ -175,7 +255,11 @@ def check(raw: dict, by_id: dict[int, Unit]) -> tuple[Candidate | None, str]:
         return None, f"{'too short' if c.duration < MIN_SECONDS else 'too long'} ({c.duration:.0f}s)"
     c.opening = (hook_unit or run[0]).text
     c.text = " ".join(u.text for u in ([hook_unit] if hook_unit else []) + rest)
-    return c, "passed checks (extended to finish the thought)" if extended else ""
+    c.proposed = proposed
+    c.weak_opening = weak_opening(c.opening)
+    if c.weak_opening:
+        notes.append(f"weak opening: {c.weak_opening}")
+    return c, f"passed checks ({', '.join(notes)})" if notes else ""
 
 
 def overlap(a: Candidate, b: Candidate) -> float:
@@ -266,7 +350,8 @@ def run_selects(units: list[Unit], ask: Ask, speakers: dict[int, str] | None = N
     parts = chunks(units)
     for n, part in enumerate(parts, 1):
         progress(f"Reading the episode for clips: part {n} of {len(parts)} ({mmss(part[0].start)}–{mmss(part[-1].end)})")
-        raw += ask(CANDIDATE_SYSTEM, f"Transcript:\n{lines_text(part, speakers)}", CANDIDATE_SCHEMA).get("candidates", [])
+        hints = hint_block(part, speakers, audio_db, audio_rate) if HINTS else ""
+        raw += ask(CANDIDATE_SYSTEM, f"Transcript:\n{lines_text(part, speakers)}{hints}", CANDIDATE_SCHEMA).get("candidates", [])
     proposed = len(raw)
     # Every proposal and what happened to it, so an eval can tell "never proposed" from "dropped".
     record: list[dict] = []
@@ -299,16 +384,18 @@ def run_selects(units: list[Unit], ask: Ask, speakers: dict[int, str] | None = N
         swiss(shortlist, ask, progress=progress)
     ranked = sorted(shortlist, key=lambda c: (-c.wins, -c.prelim))
     clips = []
-    for rank, c in enumerate(pick_varied(ranked, count), 1):
+    chosen = pick_varied(ranked, count)
+    for rank, c in enumerate(chosen, 1):
         lint = title_lint.check(c.title) if c.title else {"score": 0, "issues": [("missing", "no title")]}
         clips.append({
             "rank": rank, "title": c.title, "title_check": {"score": lint["score"], "issues": [m for _, m in lint["issues"]]},
             "type": c.type, "idea": c.idea, "opening_line": c.opening, "why": c.why,
             "pieces": [{"start": s, "end": e} for s, e in c.pieces], "duration": round(c.duration, 1),
             "hook_pulled_forward": c.hook is not None, "hook_score": c.hook_score, "energy": c.energy, "wins": c.wins,
+            "weak_opening": c.weak_opening or None,
             "lines": [c.first, c.last],
         })
-    picked = {(c["lines"][0], c["lines"][1]) for c in clips}
+    picked = {c.proposed for c in chosen}  # the model's own ids, so a clip we adjusted still counts as picked
     for entry, r in zip(record, raw):
         if (r.get("first"), r.get("last")) in picked:
             entry["status"] = "picked"

@@ -10,10 +10,14 @@ dependencies = [
   "anthropic>=1.17.0",
   "httpx>=0.28.1",
   "numpy>=2.4.6",
+  "scipy>=1.14.0",
+  "lucidlink>=1.0.1",
 ]
 
 [project.scripts]
 roughcut-engine = "roughcut_engine.__main__:main"
+roughcut-ingest = "roughcut_engine.lucid_watcher:main"
+roughcut-gui = "roughcut_engine.gui:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "httpx>=0.27"]
