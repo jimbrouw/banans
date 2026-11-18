@@ -198,44 +198,92 @@ class SyncResult:
         return any(p.method == "unsynced" for p in self.cameras + self.mics) or bool(self.warnings)
 
 
-def _find_camera(cam: Probe, mics: list[Path], guess: float | None) -> tuple[float, float, float | None]:
+def _verify_offset(cam: Probe, mics: list[Path], cand_start: float, t0: float, win: float, mic_dur: float) -> bool:
+    """Confirm a candidate start offset on a second, disjoint window of the camera file."""
+    dur = cam.duration
+    if dur < 120.0 or mic_dur < 120.0:
+        return True
+    vwin = min(30.0, dur * 0.2)
+    t_ver = min(dur - vwin - 5.0, t0 + 300.0) if t0 + 300.0 + vwin < dur else max(0.0, t0 - 300.0)
+    if abs(t_ver - t0) < win:
+        return True
+    expected = cand_start + t_ver
+    if expected < -5.0 or expected + vwin > mic_dur + 5.0:
+        return False
+    v0 = max(0.0, expected - 5.0)
+    sig = _prep(read_audio(cam.path, COARSE_RATE, t_ver, vwin), COARSE_RATE)
+    ref = _prep(mic_mix(mics, COARSE_RATE, v0, vwin + 10.0), COARSE_RATE)
+    m = locate(sig, ref, COARSE_RATE)
+    return m.psr >= MIN_PSR and abs((v0 + m.at - t_ver) - cand_start) <= 1.0
+
+
+def _find_camera(
+    cam: Probe,
+    mics: list[Path],
+    guess: float | None,
+    coarse_ref: np.ndarray | None = None,
+    mic_dur: float | None = None,
+) -> tuple[float, float, float | None]:
     """(camera start on the mic timeline, PSR, drift ppm) by waveform."""
     dur = cam.duration
-    t0 = min(60.0, dur * 0.25)
     win = min(WINDOW_S, dur * 0.5)
+    if mic_dur is None:
+        mic_dur = max(probe(m).duration for m in mics)
 
-    # Coarse: the whole mix (no prior), or a window around the timestamp guess.
-    sig = _prep(read_audio(cam.path, COARSE_RATE, t0, win), COARSE_RATE)
-    if guess is None:
-        r0, ref = 0.0, mic_mix(mics, COARSE_RATE)
-    else:
+    t0 = min(60.0, dur * 0.25)
+    hit, best_t0, best_psr = None, t0, 0.0
+
+    if guess is not None:
+        sig = _prep(read_audio(cam.path, COARSE_RATE, t0, win), COARSE_RATE)
         r0 = max(0.0, guess + t0 - PRIOR_MARGIN_S)
-        ref = mic_mix(mics, COARSE_RATE, r0, win + 2 * PRIOR_MARGIN_S)
-    coarse = locate(sig, _prep(ref, COARSE_RATE), COARSE_RATE)
-    if coarse.psr < MIN_PSR and guess is not None:
-        return _find_camera(cam, mics, None)  # the guess was wrong; search everything
-    if coarse.psr < MIN_PSR:
-        return 0.0, coarse.psr, None
-    hit = r0 + coarse.at
+        ref = _prep(mic_mix(mics, COARSE_RATE, r0, win + 2 * PRIOR_MARGIN_S), COARSE_RATE)
+        coarse = locate(sig, ref, COARSE_RATE)
+        if coarse.psr < MIN_PSR:
+            return _find_camera(cam, mics, None, coarse_ref=coarse_ref, mic_dur=mic_dur)
+        hit, best_t0, best_psr = r0 + coarse.at, t0, coarse.psr
+    else:
+        if coarse_ref is None:
+            coarse_ref = _prep(mic_mix(mics, COARSE_RATE), COARSE_RATE)
+        anchors = []
+        for a in (min(60.0, dur * 0.25), min(300.0, dur * 0.4), min(1200.0, dur * 0.65)):
+            if all(abs(a - prev) >= 30.0 for prev in anchors) and a + win <= dur:
+                anchors.append(a)
+        if not anchors:
+            anchors = [t0]
+
+        for a in anchors:
+            sig = _prep(read_audio(cam.path, COARSE_RATE, a, win), COARSE_RATE)
+            coarse = locate(sig, coarse_ref, COARSE_RATE)
+            if coarse.psr < MIN_PSR:
+                continue
+            cand_start = coarse.at - a
+            if _verify_offset(cam, mics, cand_start, a, win, mic_dur):
+                hit, best_t0, best_psr = coarse.at, a, coarse.psr
+                break
+            if coarse.psr > best_psr:
+                hit, best_t0, best_psr = coarse.at, a, coarse.psr
+
+        if hit is None:
+            return 0.0, best_psr, None
 
     # Fine: 16 kHz, ±0.25 s around the coarse hit.
     fwin = min(FINE_WINDOW_S, win)
     pad = 0.25
-    sig = _prep(read_audio(cam.path, FINE_RATE, t0, fwin), FINE_RATE)
+    sig = _prep(read_audio(cam.path, FINE_RATE, best_t0, fwin), FINE_RATE)
     f0 = max(0.0, hit - pad)
     fine = locate(sig, _prep(mic_mix(mics, FINE_RATE, f0, fwin + 2 * pad), FINE_RATE), FINE_RATE)
-    start = (f0 + fine.at) - t0 if fine.psr >= MIN_PSR else hit - t0
+    start = (f0 + fine.at) - best_t0 if fine.psr >= MIN_PSR else hit - best_t0
 
     # Drift: the same fine search near the end of the camera file.
     drift = None
     t1 = dur - min(120.0, dur * 0.2) - fwin
-    if t1 - t0 > 300:
+    if t1 - best_t0 > 300:
         sig = _prep(read_audio(cam.path, FINE_RATE, t1, fwin), FINE_RATE)
         e0 = max(0.0, start + t1 - 0.5)
         end = locate(sig, _prep(mic_mix(mics, FINE_RATE, e0, fwin + 1.0), FINE_RATE), FINE_RATE)
         if end.psr >= MIN_PSR:
-            drift = ((e0 + end.at - t1) - start) / (t1 - t0) * 1e6
-    return start, max(coarse.psr, fine.psr), drift
+            drift = ((e0 + end.at - t1) - start) / (t1 - best_t0) * 1e6
+    return start, max(best_psr, fine.psr), drift
 
 
 def sync_session(cameras: list[Path], mics: list[Path], priors: dict[Path, float] | None = None) -> SyncResult:
@@ -272,13 +320,17 @@ def sync_session(cameras: list[Path], mics: list[Path], priors: dict[Path, float
 
         # Cameras: each found inside the mix of the stems that share mic 1's clock.
         anchor = [m.path for m in mic_places if m.start == 0.0 and m.method != "unsynced"]
+        mic_dur = max(m.duration for m in mic_places if m.path in anchor)
+        coarse_ref = None
         mic_prior = (priors or {}).get(ref.path)
         cam_places = []
         for c in cam_probes:
             guess = None
             if priors and c.path in priors and mic_prior is not None:
                 guess = priors[c.path] - mic_prior
-            start, psr, drift = _find_camera(c, anchor, guess)
+            if guess is None and coarse_ref is None:
+                coarse_ref = _prep(mic_mix(anchor, COARSE_RATE), COARSE_RATE)
+            start, psr, drift = _find_camera(c, anchor, guess, coarse_ref=coarse_ref, mic_dur=mic_dur)
             ok = psr >= MIN_PSR
             cam_places.append(Placement(c.path, start, "waveform" if ok else "unsynced", psr, drift, c.duration))
             if not ok:

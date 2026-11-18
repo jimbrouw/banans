@@ -223,6 +223,68 @@ def locked_paths() -> set[str] | None:
 
 # ── the watcher ───────────────────────────────────────────────────────────────
 
+@dataclass
+class _MountEntry:
+    name: str
+    is_dir: bool
+    size: int = 0
+    modified_at: int = 0
+
+
+class _MountFS:
+    """Fallback filesystem adapter over the mounted LucidLink volume."""
+
+    def __init__(self, mount: Path):
+        self.mount = mount
+
+    def read_dir(self, directory: str) -> list[_MountEntry]:
+        target = self.mount / directory.lstrip("/")
+        if not target.is_dir():
+            raise FileNotFoundError(target)
+        out: list[_MountEntry] = []
+        with os.scandir(target) as it:
+            for entry in it:
+                is_dir = entry.is_dir(follow_symlinks=False)
+                if is_dir:
+                    out.append(_MountEntry(entry.name, True))
+                else:
+                    st = entry.stat(follow_symlinks=False)
+                    out.append(_MountEntry(entry.name, False, st.st_size, st.st_mtime_ns))
+        return out
+
+    def open(self, path: str, mode: str = "rb", buffering: int = 0):
+        return open(self.mount / path.lstrip("/"), mode, buffering=buffering)
+
+
+def scan_mount_batches(cfg: WatchConfig, store: StateStore) -> dict[str, Batch]:
+    """Scan the mounted LucidLink directory for sessions and merge into StateStore."""
+    batches = store.load()
+    if not cfg.mount.exists():
+        return batches
+    fs = _MountFS(cfg.mount)
+    specs = [(s, re.compile(s.pattern)) for s in cfg.sources]
+    now = time.time()
+    seen_dirs: dict[str, list] = {}
+    for spec, rx in specs:
+        listing = seen_dirs.setdefault(spec.directory, LucidWatcher._list_static(fs, spec.directory))
+        for rel, entry in listing:
+            if not (m := rx.match(rel)):
+                continue
+            ts = datetime.strptime(m["ts"], spec.ts_format)
+            key = next(
+                (k for k in batches if abs((datetime.strptime(k, "%Y-%m-%d %H-%M-%S") - ts).total_seconds()) <= GROUP_TOLERANCE_S),
+                ts.strftime("%Y-%m-%d %H-%M-%S"),
+            )
+            b = batches.setdefault(key, Batch(key))
+            path = f"{spec.directory}/{rel}"
+            mem = b.members.get(spec.role)
+            if mem is None or mem.path != path:
+                b.members[spec.role] = mem = Member(spec.role, path)
+                mem.size, mem.modified_at, mem.stable_since = entry.size, entry.modified_at, now
+                store.save(b)
+    return batches
+
+
 class LucidWatcher:
     def __init__(self, cfg: WatchConfig, store: StateStore, on_ready):
         self.cfg = cfg
@@ -231,41 +293,62 @@ class LucidWatcher:
         self.batches = store.load()
         self._specs = [(s, re.compile(s.pattern)) for s in cfg.sources]
 
-    # The SDK session lives entirely inside run(); nothing else touches it.
     def run(self, stop: threading.Event) -> None:
-        import lucidlink  # optional dependency: `uv sync --extra lucid`
+        """Poll via the LucidLink SDK (reconnecting on drop), falling back to the local mount."""
+        while not stop.is_set():
+            try:
+                import lucidlink  # optional dependency: `uv sync --extra lucid`
 
-        with lucidlink.Client() as client:
-            client.login(lucidlink.ServiceAccountCredentials(token=service_account_token()))
-            filespace = client.workspace.link_filespace(self.cfg.filespace_id)
-            fs = filespace.file_system
-            log.info("Watching %s (%s)", filespace.name, self.cfg.filespace_id)
-            while not stop.is_set():
-                try:
-                    self.poll(fs)
-                except Exception:  # noqa: BLE001 - one bad poll must not kill a 24/7 service
-                    log.exception("Poll failed; retrying in %ss", POLL_SECONDS)
-                stop.wait(POLL_SECONDS)
+                with lucidlink.Client() as client:
+                    client.login(lucidlink.ServiceAccountCredentials(token=service_account_token()))
+                    filespace = client.workspace.link_filespace(self.cfg.filespace_id)
+                    fs = filespace.file_system
+                    log.info("Watching %s (%s) via SDK", filespace.name, self.cfg.filespace_id)
+                    while not stop.is_set():
+                        self.poll(fs)
+                        stop.wait(POLL_SECONDS)
+            except Exception as e:  # noqa: BLE001 - reconnect or fall back to mount
+                if self.cfg.mount.exists():
+                    log.warning("LucidLink SDK unavailable (%s); watching mount %s", e, self.cfg.mount)
+                    mount_fs = _MountFS(self.cfg.mount)
+                    while not stop.is_set():
+                        try:
+                            self.poll(mount_fs)
+                        except Exception:  # noqa: BLE001
+                            log.exception("Mount poll failed; retrying in %ss", POLL_SECONDS)
+                        stop.wait(POLL_SECONDS)
+                else:
+                    log.exception("Watcher connection failed; retrying in %ss", POLL_SECONDS)
+                    stop.wait(POLL_SECONDS)
 
-    def _list(self, fs, directory: str, depth: int = 2) -> list[tuple[str, object]]:
-        """(path relative to directory, FsEntry) for files up to `depth` levels down."""
-        from lucidlink import EntryType
-        from lucidlink.exceptions import FsNotFoundError
+    @staticmethod
+    def _list_static(fs, directory: str, depth: int = 2) -> list[tuple[str, object]]:
+        """(path relative to directory, entry) for files up to `depth` levels down."""
+        try:
+            from lucidlink import EntryType
+            from lucidlink.exceptions import FsNotFoundError
+        except ImportError:
+            EntryType = None
+            FsNotFoundError = FileNotFoundError
 
         out, todo = [], [("", 0)]
         while todo:
             rel, d = todo.pop()
             try:
                 entries = fs.read_dir(f"{directory}/{rel}".rstrip("/") or "/")
-            except FsNotFoundError:
+            except (FileNotFoundError, FsNotFoundError):
                 continue
             for e in entries:
                 sub = f"{rel}/{e.name}".lstrip("/")
-                if e.type == EntryType.DIR and d + 1 < depth:
+                is_dir = getattr(e, "is_dir", False) or (EntryType is not None and getattr(e, "type", None) == EntryType.DIR)
+                if is_dir and d + 1 < depth:
                     todo.append((sub, d + 1))
-                elif e.type == EntryType.FILE and not e.name.startswith("."):
+                elif not is_dir and not e.name.startswith("."):
                     out.append((sub, e))
         return out
+
+    def _list(self, fs, directory: str, depth: int = 2) -> list[tuple[str, object]]:
+        return self._list_static(fs, directory, depth)
 
     def _session_key(self, ts: datetime) -> str:
         """Snap to an existing batch within GROUP_TOLERANCE_S (masters and stems start a second apart)."""
@@ -293,6 +376,9 @@ class LucidWatcher:
                     mem.size, mem.modified_at, mem.stable_polls, mem.stable_since, mem.closed = entry.size, entry.modified_at, 0, now, False
                     if b.state in (State.PUBLISHED, State.IMPORTED, State.NEEDS_REVIEW):
                         b.state = State.SUPERSEDED  # re-cut as V2 once it settles again
+                    elif b.state in (State.STALE, State.FAILED):
+                        # A file arrived or updated later (e.g., overnight upload finished): re-evaluate.
+                        b.state, b.error, b.attempts, b.first_seen = State.UPLOADING, None, 0, now
                 else:
                     mem.stable_polls += 1
 
@@ -338,15 +424,18 @@ class LucidWatcher:
         return locks
 
     def _container_closed(self, fs, m: Member) -> tuple[bool, float]:
-        from lucidlink.exceptions import FsError
+        try:
+            from lucidlink.exceptions import FsError
+        except ImportError:
+            FsError = OSError
 
         try:
             with fs.open(m.path, "rb", buffering=0) as f:
                 if m.path.lower().endswith(".wav"):
                     return wav_closed(f.read(4096), m.size)
                 return mp4_closed(f, m.size), 0.0
-        except FsError as e:
-            if e.errno == errno.EBUSY:
+        except (OSError, FsError) as e:
+            if getattr(e, "errno", None) == errno.EBUSY:
                 return False, 0.0  # another client holds a lock: still being written
             raise
 
