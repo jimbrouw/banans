@@ -16,7 +16,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .config import IngestConfig
-from .lucid_watcher import LucidWatcher, WatchConfig, StateStore, process_batch, State
+from .lucid_watcher import LucidWatcher, WatchConfig, StateStore, process_batch, State, scan_mount_batches
 
 
 class ActionButton(tk.Label):
@@ -165,6 +165,7 @@ class IngestApp(tk.Tk):
         self.watcher_thread: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.last_batch_output: str | None = None
+        self._caffeinate_proc: subprocess.Popen | None = None
 
         self._build_ui()
         self._populate_episodes()
@@ -541,33 +542,47 @@ class IngestApp(tk.Tk):
         self.cfg.save()
 
     def _populate_episodes(self):
-        batches = self.store.load()
-        complete = [k for k, b in batches.items() if len(b.members) == 6]
-        complete.sort(reverse=True)
+        def _apply(batches):
+            complete = sorted((k for k, b in batches.items() if len(b.members) == 6), reverse=True)
+            if complete:
+                self.ep_dropdown.set_values(complete)
+                if not self.ep_var.get() or self.ep_var.get() not in complete:
+                    default_choice = "2026-10-21 17-35-23" if "2026-10-21 17-35-23" in complete else complete[0]
+                    self.ep_var.set(default_choice)
+                self.log(f"Found {len(complete)} complete episodes in LucidLink. Selected: {self.ep_var.get()}")
+            else:
+                self.ep_dropdown.set_values(["No complete episodes found"])
+                self.ep_var.set("No complete episodes found")
 
-        if complete:
-            self.ep_dropdown.set_values(complete)
-            if not self.ep_var.get() or self.ep_var.get() not in complete:
-                default_choice = "2026-10-21 17-35-23" if "2026-10-21 17-35-23" in complete else complete[0]
-                self.ep_var.set(default_choice)
-            self.log(f"Found {len(complete)} complete episodes in LucidLink. Selected: {self.ep_var.get()}")
-        else:
-            self.ep_dropdown.set_values(["No complete episodes found"])
-            self.ep_var.set("No complete episodes found")
+        def _scan():
+            batches = scan_mount_batches(self.watch_cfg, self.store)
+            self.after(0, lambda: _apply(batches))
+
+        threading.Thread(target=_scan, daemon=True).start()
+
+    def _stop_caffeinate(self):
+        if self._caffeinate_proc and self._caffeinate_proc.poll() is None:
+            self._caffeinate_proc.terminate()
+        self._caffeinate_proc = None
 
     def _toggle_watcher(self):
         if self.watcher_thread and self.watcher_thread.is_alive():
             self.stop_event.set()
+            self._stop_caffeinate()
             self.status_lbl.config(text="Status: STOPPING...", fg="#e5a93b")
             self.toggle_btn.set_style("Start Overnight Watcher", bg="#238636", fg="#ffffff", hover_bg="#2ea043")
             self.log("Stopping background watcher...")
         else:
             self.stop_event.clear()
+            try:
+                self._caffeinate_proc = subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
+            except FileNotFoundError:
+                self._caffeinate_proc = None
             self.watcher_thread = threading.Thread(target=self._run_watcher, daemon=True)
             self.watcher_thread.start()
             self.status_lbl.config(text="Status: WATCHING (Overnight Active)", fg="#3fb950")
             self.toggle_btn.set_style("Stop Watcher", bg="#da3633", fg="#ffffff", hover_bg="#f85149")
-            self.log("Overnight Watcher started. Monitoring filespace 'studio.specialized2026'...")
+            self.log("Overnight Watcher started (idle sleep prevented). Monitoring 'studio.specialized2026'...")
 
     def _run_watcher(self):
         def on_ready(b):
@@ -575,6 +590,7 @@ class IngestApp(tk.Tk):
             process_batch(b, self.watch_cfg, self.store, progress_callback=self.set_progress)
             self.last_batch_output = b.output
             self.log(f"Finished {b.key}! XML ready: {b.output}")
+            self.after(0, self._populate_episodes)
             if self.auto_prem_var.get():
                 self.log("Automatically opening in Adobe Premiere Pro...")
                 self._open_in_premiere()
@@ -585,6 +601,7 @@ class IngestApp(tk.Tk):
         except Exception as e:
             self.log(f"Watcher error: {e}")
         finally:
+            self._stop_caffeinate()
             self.after(0, lambda: self.status_lbl.config(text="Status: IDLE", fg="#8b949e"))
             self.after(0, lambda: self.toggle_btn.set_style("Start Overnight Watcher", bg="#238636", fg="#ffffff", hover_bg="#2ea043"))
 
@@ -639,9 +656,17 @@ class IngestApp(tk.Tk):
             messagebox.showwarning("RoughCut Ingest", "No XML sequence has been generated yet.")
             return
         self.log(f"Opening XML in Adobe Premiere Pro: {self.last_batch_output}")
-        res = subprocess.run(["open", "-b", "com.adobe.PremierePro.26", self.last_batch_output], capture_output=True)
-        if res.returncode != 0:
-            subprocess.run(["open", "-a", "Adobe Premiere Pro 2026", self.last_batch_output], capture_output=True)
+        candidates: list[list[str]] = []
+        apps = sorted(Path("/Applications").glob("Adobe Premiere Pro*/Adobe Premiere Pro*.app"), reverse=True)
+        for app in apps:
+            candidates.append(["open", "-a", str(app), self.last_batch_output])
+        for ver in ("27", "26", "25", "24"):
+            candidates.append(["open", "-b", f"com.adobe.PremierePro.{ver}", self.last_batch_output])
+        for cmd in candidates:
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode == 0:
+                return
+        self.log("Could not launch Adobe Premiere Pro automatically; import the XML manually via File > Import.")
 
 
 def main():
