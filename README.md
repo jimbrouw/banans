@@ -108,9 +108,24 @@ Open the local Vite URL, click **Analyse transcript**, review the seeded decisio
 
 ```bash
 npm test
+npm run eval
 npm run lint
 npm run build:uxp
 ```
+
+### Rough-cut evaluation
+
+`npm run eval` runs the safety-first benchmark in `src/eval`. The reusable `evaluateRun` API accepts generated shots, a manually edited reference, transcript and mic evidence, timeline snapshots, measured processing time, and measured human correction time.
+
+The report includes pass/fail, weighted accuracy, cuts per minute, average shot length, correction count, estimated time saved, evidence confidence, and timecoded bad cuts. Original-timeline mutation, unsafe duplication, unsafe re-runs, or incomplete error handling are hard failures. A 60-minute episode must have a measured correction time below 25 minutes and save at least 60% of the recorded manual-edit baseline; estimates alone cannot pass that gate.
+
+To extract a real manually edited FCP XML reference:
+
+```bash
+npm run eval:reference -- "EDIT V2 xlm for test .xml"
+```
+
+The extractor resolves stacked camera tracks by selecting the highest enabled mapped camera, ignores the graphics track, and preserves same-camera source edits. It writes an eval-compatible reference and brand-style profile to `eval-output/edit-v2-reference.json`.
 
 Current automated coverage includes transcript normalization, timeline offsets, filler and pause decisions, trim merging, short-interjection handling, overlap-to-wide camera planning, and UXP bundle validation.
 

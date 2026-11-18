@@ -1,57 +1,111 @@
-import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, Camera, Check, ChevronDown, Clapperboard, Film, Lock, Play, Quote, Scissors, Sparkles } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Check } from 'lucide-react'
 import { analyseTranscript } from './analyse'
 import { sequence as demoSequence } from './mockPremiere'
 import { isPremiereHost, premiere } from './premiereAdapter'
-import type { AnalysisSettings, EditDecision, MarkerType, SequenceInfo, SpeakerMapping } from './types'
+import { errorMessage } from './uiHelpers'
+import { isRunning, logged, logPath, writeLog } from './runLog'
+import { readSetting, SETTINGS, writeSetting } from './settings'
+import type { AnalysisSettings, EditDecision, SequenceInfo, SpeakerMapping, TranscriptSegment } from './types'
+import { SequencePicker, TabBar } from './panels/Chrome'
+import { AnalysisPanel } from './panels/AnalysisPanel'
+import { ResultsPanel } from './panels/ResultsPanel'
+import { ColdOpenPanel } from './panels/ColdOpenPanel'
+import { MulticamPanel } from './panels/MulticamPanel'
+import { EngineStatus } from './panels/EngineStatus'
+import { ReviewPanel } from './panels/ReviewPanel'
+import { SetupPanel } from './panels/SetupPanel'
+import { SelectsPanel } from './panels/SelectsPanel'
+import { Options } from './ui'
+
 import './App.css'
 
-const markerMeta: Record<MarkerType, { name: string; color: string; icon: typeof Sparkles }> = {
-  social_clip: { name: 'Strong clip', color: '#69d59a', icon: Sparkles },
-  chapter: { name: 'Chapter', color: '#58a9e8', icon: Film },
-  suggested_trim: { name: 'Trim', color: '#ed7a13', icon: Scissors },
-  warning: { name: 'Warning', color: '#e5bd53', icon: AlertTriangle },
-  strong_quote: { name: 'Quote', color: '#f0a13b', icon: Quote },
-  camera_switch: { name: 'Camera', color: '#52cbc7', icon: Camera },
-}
+type TabId = 'cleanup' | 'multicam' | 'clips' | 'setup'
+const TAB_IDS: TabId[] = ['cleanup', 'multicam', 'clips', 'setup']
 
-const formatTime = (seconds: number) => new Date(seconds * 1000).toISOString().slice(11, 19)
-const cameras = ['Camera 1', 'Camera 2', 'Wide']
-
-function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void }) {
-  return <button className={`toggle ${checked ? 'on' : ''}`} onClick={onChange} aria-pressed={checked}><span /></button>
-}
+// Markers for the camera plan only need a stable speaker → camera guess;
+// real camera mapping happens in the Multicam tab against detected tracks.
+const markerMappings = (speakers: string[]): SpeakerMapping[] =>
+  speakers.map((speaker, i) => ({ speaker, camera: i === 0 ? 'Camera 1' : i === 1 ? 'Camera 2' : 'Wide' }))
 
 export default function App() {
   const [settings, setSettings] = useState<AnalysisSettings>({ socialClips: true, chapters: true, suggestedTrims: true, pauseMarkers: true, cameraPlan: true, minimumClipSeconds: 15, confidenceThreshold: .6, minimumPauseSeconds: 1.2, minimumShotSeconds: 2.5, fillerAggressiveness: 'medium' })
   const [sequence, setSequence] = useState<SequenceInfo>(demoSequence)
-  const [mappings, setMappings] = useState<SpeakerMapping[]>([{ speaker: 'Host', camera: 'Camera 1' }, { speaker: 'Guest', camera: 'Camera 2' }])
   const [decisions, setDecisions] = useState<EditDecision[]>([])
+  const [segments, setSegments] = useState<TranscriptSegment[]>([])
   const [status, setStatus] = useState<'loading' | 'ready' | 'analysing' | 'results' | 'creating' | 'created' | 'error'>('loading')
   const [error, setError] = useState('')
+  const [sequences, setSequences] = useState<{ id: string; name: string }[]>([])
+  const [lastCreated, setLastCreated] = useState('')
+  const [tab, setTab] = useState<TabId>(() => { const t = readSetting(SETTINGS.tab, 'cleanup') as TabId; return TAB_IDS.includes(t) ? t : 'cleanup' })
+  const [tabStatus, setTabStatus] = useState<Partial<Record<TabId, string>>>({})
+  const sequenceId = useRef('')
   const selected = decisions.filter((d) => d.selected)
-  const counts = useMemo(() => Object.keys(markerMeta).map((type) => ({ type: type as MarkerType, count: decisions.filter((d) => d.type === type).length })).filter((x) => x.count), [decisions])
+  const mappings = markerMappings([...new Set(segments.map((s) => s.speaker))])
 
-  useEffect(() => {
-    premiere.getActiveSequence()
-      .then((activeSequence) => { setSequence(activeSequence); setStatus('ready') })
-      .catch((reason: unknown) => { setError(reason instanceof Error ? reason.message : String(reason)); setStatus('error') })
+  const statusFor = (id: TabId) => (text: string) => setTabStatus((s) => (s[id] === text ? s : { ...s, [id]: text }))
+  // Stable callbacks so the panels' status effects don't re-run on every render.
+  const [cleanupStatus] = useState(() => statusFor('cleanup'))
+  const [multicamStatus] = useState(() => statusFor('multicam'))
+
+  // Follow Premiere's active sequence. Results belong to one sequence, so a switch
+  // clears them (panels are keyed by sequence id and start fresh). Never switch
+  // mid-action: actions like Auto Cut open the sequence they create.
+  const followTimeline = useCallback(async () => {
+    if (isRunning()) return
+    try {
+      const active = await premiere.getActiveSequence()
+      setSequences(await premiere.listSequences())
+      if (active.id === sequenceId.current) return
+      const first = sequenceId.current === ''
+      sequenceId.current = active.id
+      setSequence(active); setDecisions([]); setSegments([]); setError(''); setStatus('ready'); setTabStatus({})
+      writeLog(first
+        ? { at: new Date(), status: 'INFO', action: 'Panel opened', details: { sequence: active.name, host: isPremiereHost() ? 'premiere' : 'browser', log: await logPath() ?? 'console' } }
+        : { at: new Date(), status: 'INFO', action: 'Sequence changed', details: { sequence: active.name } })
+    } catch (reason) {
+      if (sequenceId.current === '') { setError(errorMessage(reason)); setStatus('error') }
+    }
   }, [])
 
-  const runAnalysis = async () => {
+  useEffect(() => {
+    const first = setTimeout(followTimeline, 0)
+    const stopWatching = premiere.watchActiveSequence(() => { followTimeline() })
+    const timer = setInterval(followTimeline, 1500) // safety net if the event doesn't fire
+    return () => { clearTimeout(first); stopWatching(); clearInterval(timer) }
+  }, [followTimeline])
+
+  const chooseSequence = async (id: string) => {
+    try {
+      await premiere.activateSequence(id)
+      await followTimeline()
+    } catch (reason) {
+      setError(errorMessage(reason))
+    }
+  }
+
+  const chooseTab = (id: string) => { setTab(id as TabId); writeSetting(SETTINGS.tab, id) }
+
+  const readTranscript = async (loadFromFile = false) => {
+    const transcript = await logged('Read transcript', { sequence: sequence.name, from: loadFromFile ? 'file' : 'premiere' },
+      () => loadFromFile ? premiere.importTranscriptFile() : premiere.getTranscript(sequence.id),
+      (t) => `${t.length} segments · ${new Set(t.map((x) => x.speaker)).size} speakers`)
+    if (transcript.length) setSegments(transcript)
+    return transcript
+  }
+
+  const runAnalysis = async (loadFromFile = false) => {
     try {
       setError('')
       setStatus('analysing')
-      const transcript = await premiere.getTranscript(sequence.id)
-      const speakers = [...new Set(transcript.map((segment) => segment.speaker))]
-      const resolvedMappings = speakers.map((speaker, index) => mappings.find((mapping) => mapping.speaker === speaker) ?? { speaker, camera: index === 0 ? 'Camera 1' : index === 1 ? 'Camera 2' : 'Wide' })
-      setMappings(resolvedMappings)
-      const nextDecisions = await analyseTranscript(transcript, settings, resolvedMappings)
-      if (!nextDecisions.length) throw new Error('No decisions matched the current analysis settings. Lower the confidence threshold or minimum clip length.')
+      const transcript = await readTranscript(loadFromFile)
+      if (!transcript.length) { setStatus(decisions.length ? 'results' : 'ready'); return }
+      const nextDecisions = await analyseTranscript(transcript, settings, markerMappings([...new Set(transcript.map((s) => s.speaker))]))
+      if (!nextDecisions.length) throw new Error('Nothing matched the current options. Lower the confidence or the shortest clip length under Options.')
       setDecisions(nextDecisions)
       setStatus('results')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      setError(errorMessage(reason))
       setStatus('error')
     }
   }
@@ -60,65 +114,60 @@ export default function App() {
     try {
       setError('')
       setStatus('creating')
-      await premiere.createRoughCut(sequence.id, selected, mappings)
+      setLastCreated(await logged('Review Markers', { source: sequence.name, markers: selected.length }, () => premiere.createRoughCut(sequence.id, selected, mappings), (n) => n))
       setStatus('created')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      setError(errorMessage(reason))
       setStatus('error')
     }
   }
 
-  const updateMapping = (speaker: string, camera: string) => setMappings((current) => current.map((m) => m.speaker === speaker ? { ...m, camera } : m))
   const patchSettings = (patch: Partial<AnalysisSettings>) => setSettings((current) => ({ ...current, ...patch }))
+  const busy = status === 'loading' || status === 'analysing' || status === 'creating'
+  const analyseLabel = status === 'loading' ? 'Connecting to Premiere…' : status === 'analysing' ? 'Reading the transcript…' : decisions.length ? 'Find again' : 'Find clips and chapters'
+
+  const tabs = [
+    { id: 'cleanup', label: 'Clean up', status: tabStatus.cleanup },
+    { id: 'multicam', label: 'Multicam', status: tabStatus.multicam },
+    { id: 'clips', label: 'Clips', status: tabStatus.clips },
+    { id: 'setup', label: 'Setup' },
+  ]
+  const show = (id: TabId) => ({ className: 'tab-panel', role: 'tabpanel', style: id === tab ? undefined : { display: 'none' } })
 
   return (
     <main className="app-shell">
-      <section className="panel" aria-label="RoughCut podcast edit assistant">
-        <header><div className="brand-mark"><Clapperboard size={19} /></div><div><h1>RoughCut</h1><p>Podcast Edit Assistant</p></div><span className="host-label">{isPremiereHost() ? 'PREMIERE PRO' : 'BROWSER DEMO'}</span></header>
+      <section className="panel" aria-label="RoughCut">
+        <header className="topbar">
+          <span className="wordmark">RoughCut</span>
+          <SequencePicker sequence={sequence} sequences={sequences} onSelect={chooseSequence} />
+          <EngineStatus />
+        </header>
+        <TabBar tabs={tabs} active={tab} onChange={chooseTab} />
+        {lastCreated && <div className="created-banner"><Check size={14} /><span>Created <strong>{lastCreated}</strong>, now open in the Timeline</span></div>}
 
-        <section className="section sequence-section">
-          <div className="section-title"><h2>Active sequence</h2><span className="live-dot">Connected</span></div>
-          <button className="sequence-row"><Film size={20} /><strong>{sequence.name}</strong><ChevronDown size={17} /></button>
-          <div className="transcript-row"><span className="check-icon"><Check size={14} /></span><strong>{status === 'loading' ? 'Connecting...' : 'Sequence ready'}</strong><span>{Math.floor(sequence.duration / 60)}:{String(sequence.duration % 60).padStart(2, '0')}{sequence.transcriptCoverage ? ` · ${sequence.transcriptCoverage}% demo coverage` : ''}</span></div>
-        </section>
-
-        <section className="section">
-          <div className="section-title"><h2>Speaker mapping</h2><button className="text-button">Auto-detect</button></div>
-          <div className="mapping-list">
-            {mappings.map((mapping, index) => <div className="mapping" key={mapping.speaker}><span className="speaker-dot" style={{ background: index ? '#52cbc7' : '#58a9e8' }} /><strong>{mapping.speaker}</strong><span className="maps-to">maps to</span><select value={mapping.camera} onChange={(e) => updateMapping(mapping.speaker, e.target.value)}>{cameras.map((camera) => <option key={camera}>{camera}</option>)}</select></div>)}
-            <div className="mapping"><span className="speaker-dot wide" /><strong>Fallback</strong><span className="maps-to">uses</span><select defaultValue="Wide">{cameras.map((camera) => <option key={camera}>{camera}</option>)}</select></div>
+        <div {...show('cleanup')}>
+          <ReviewPanel key={`review-${sequence.id}`} sequenceId={sequence.id} onCreated={setLastCreated} onStatus={cleanupStatus} />
+        </div>
+        <div {...show('multicam')}>
+          <MulticamPanel key={`multicam-${sequence.id}`} sequenceId={sequence.id} transcript={segments} onReadTranscript={async () => { await readTranscript() }} onCreated={setLastCreated} onStatus={multicamStatus} />
+        </div>
+        <div {...show('clips')}>
+          <div className="tab-body">
+            <SelectsPanel key={`selects-${sequence.id}`} sequenceId={sequence.id} onCreated={setLastCreated} />
+            <div className="block">
+              <Options label="Review markers" summary="Off. Turn on for the full marker list and cold opens">
+                <AnalysisPanel settings={settings} onPatch={patchSettings} busy={busy} buttonLabel={analyseLabel} error={error} onAnalyse={runAnalysis} hasResults={decisions.length > 0} />
+                {decisions.length > 0 && <div className="block results">
+                  <ResultsPanel decisions={decisions} setDecisions={setDecisions} sequenceName={sequence.name} creating={status === 'creating'} created={status === 'created'} onCreateRoughCut={createRoughCut} />
+                  <ColdOpenPanel key={`cold-${sequence.id}`} sequenceId={sequence.id} segments={segments} onCreated={setLastCreated} />
+                </div>}
+              </Options>
+            </div>
           </div>
-        </section>
-
-        <section className="section">
-          <div className="section-title"><h2>Analysis</h2><span className="hint">Editor-controlled suggestions</span></div>
-          <div className="analysis-options">
-            <label><div><strong>Social clips</strong><span>Find self-contained moments</span></div><Toggle checked={settings.socialClips} onChange={() => patchSettings({ socialClips: !settings.socialClips })} /></label>
-            <label><div><strong>Chapters</strong><span>Detect topic changes</span></div><Toggle checked={settings.chapters} onChange={() => patchSettings({ chapters: !settings.chapters })} /></label>
-            <label><div><strong>Suggested trims</strong><span>Find pauses, filler and repeats</span></div><Toggle checked={settings.suggestedTrims} onChange={() => patchSettings({ suggestedTrims: !settings.suggestedTrims })} /></label>
-            <label><div><strong>Pause markers</strong><span>Flag transcript gaps for review</span></div><Toggle checked={settings.pauseMarkers} onChange={() => patchSettings({ pauseMarkers: !settings.pauseMarkers })} /></label>
-            <label><div><strong>Camera plan</strong><span>Respect sustained speaker turns</span></div><Toggle checked={settings.cameraPlan} onChange={() => patchSettings({ cameraPlan: !settings.cameraPlan })} /></label>
-          </div>
-          <div className="compact-settings">
-            <label>Minimum clip <select value={settings.minimumClipSeconds} onChange={(e) => patchSettings({ minimumClipSeconds: Number(e.target.value) })}><option value="15">15s</option><option value="30">30s</option><option value="45">45s</option></select></label>
-            <label>Confidence <select value={settings.confidenceThreshold} onChange={(e) => patchSettings({ confidenceThreshold: Number(e.target.value) })}><option value=".6">60%+</option><option value=".75">75%+</option><option value=".9">90%+</option></select></label>
-            <label>Pause length <select value={settings.minimumPauseSeconds} onChange={(e) => patchSettings({ minimumPauseSeconds: Number(e.target.value) })}><option value=".8">0.8s</option><option value="1.2">1.2s</option><option value="2">2.0s</option></select></label>
-            <label>Minimum shot <select value={settings.minimumShotSeconds} onChange={(e) => patchSettings({ minimumShotSeconds: Number(e.target.value) })}><option value="1.5">1.5s</option><option value="2.5">2.5s</option><option value="4">4.0s</option></select></label>
-            <label>Filler scan <select value={settings.fillerAggressiveness} onChange={(e) => patchSettings({ fillerAggressiveness: e.target.value as AnalysisSettings['fillerAggressiveness'] })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
-          </div>
-          <button className="primary" onClick={runAnalysis} disabled={status === 'loading' || status === 'analysing' || status === 'creating'}><Play size={17} fill="currentColor" />{status === 'loading' ? 'Connecting to Premiere...' : status === 'analysing' ? 'Analysing transcript...' : decisions.length ? 'Analyse again' : 'Analyse transcript'}</button>
-          {error && <div className="error"><AlertTriangle size={16} />{error}</div>}
-        </section>
-
-        {decisions.length > 0 && <section className="section results">
-          <div className="result-heading"><div className="score">{Math.round(decisions.reduce((sum, d) => sum + d.confidence, 0) / decisions.length * 100)}%</div><div><h2>{decisions.length} edit decisions</h2><p>{selected.length} selected for write-back</p></div></div>
-          <div className="count-row">{counts.map(({ type, count }) => <span key={type}><i style={{ background: markerMeta[type].color }} />{count} {markerMeta[type].name}</span>)}</div>
-          <div className="marker-header"><h2>Proposed markers</h2><button className="text-button" onClick={() => setDecisions((current) => current.map((d) => ({ ...d, selected: true })))}>Select all</button></div>
-          <div className="marker-list">{decisions.map((decision) => { const meta = markerMeta[decision.type]; const Icon = meta.icon; return <button className={`marker ${decision.selected ? 'selected' : ''}`} key={decision.id} onClick={() => setDecisions((current) => current.map((d) => d.id === decision.id ? { ...d, selected: !d.selected } : d))}><span className="marker-check">{decision.selected && <Check size={13} />}</span><i className="marker-line" style={{ background: meta.color }} /><Icon size={17} style={{ color: meta.color }} /><time>{formatTime(decision.start)}</time><span className="marker-copy"><strong>{decision.label}</strong><small>{decision.detail}</small></span><em style={{ color: meta.color }}>{Math.round(decision.confidence * 100)}%</em></button>})}</div>
-          <button className="rough-cut" disabled={!selected.length || status === 'creating'} onClick={createRoughCut}><Sparkles size={19} />{status === 'creating' ? 'Building review cut...' : status === 'created' ? 'Marked review cut created' : `Create Marked Review Cut (${selected.length})`}</button>
-          <p className="safety"><Lock size={14} /> Original sequence stays untouched</p>
-          {status === 'created' && <div className="success"><Check size={16} /> Created “{sequence.name} - AI Rough Cut” with {selected.length} markers.</div>}
-        </section>}
+        </div>
+        <div {...show('setup')}>
+          <SetupPanel />
+        </div>
       </section>
     </main>
   )

@@ -1,0 +1,85 @@
+import { useEffect, useState } from 'react'
+import { Press } from '../ui'
+import { openExternal } from '../uiHelpers'
+import { ENGINE_OFF_MESSAGE, ENGINE_URL, engineHealth, lastEngineError } from '../engineClient'
+import type { EngineHealth } from '../engineClient'
+import { logPath } from '../runLog'
+import { aiProvider, CLAUDE_MODELS, claudeModel, readSetting, SETTINGS, writeSetting } from '../settings'
+import type { AiProvider } from '../settings'
+import { isPremiereHost } from '../premiereAdapter'
+import { SpikePanel } from './SpikePanel'
+
+/** Things you set once: the local engine, your Claude key, where the log is. */
+export function SetupPanel() {
+  const [engine, setEngine] = useState<EngineHealth | null | undefined>(undefined)
+  const [engineError, setEngineError] = useState('')
+  const [key, setKey] = useState(() => readSetting(SETTINGS.claudeKey))
+  const [model, setModel] = useState(() => claudeModel().id)
+  const [provider, setProvider] = useState<AiProvider>(aiProvider)
+  const [log, setLog] = useState<string | null>(null)
+
+  const check = async () => {
+    setEngine(undefined)
+    const h = await engineHealth()
+    setEngine(h); setEngineError(h ? '' : lastEngineError)
+  }
+  useEffect(() => {
+    const first = setTimeout(check, 0)
+    logPath().then(setLog)
+    return () => clearTimeout(first)
+  }, [])
+
+  return (
+    <div className="tab-body">
+      <section className="block">
+        <h3 className="block-title">Local engine</h3>
+        <p className="lede">
+          {engine === undefined ? 'Checking…'
+            : engine ? `Running at ${ENGINE_URL}. Starts by itself when RoughCut needs it and stops after 10 idle minutes.`
+            : ENGINE_OFF_MESSAGE}
+        </p>
+        {engine && <p className="footnote">Version {engine.version}, Whisper model {engine.model.split('/').pop()}</p>}
+        {engineError && <p className="footnote">Premiere said: {engineError}</p>}
+        <Press className="text-button" onClick={check}>Check again</Press>
+      </section>
+
+      <section className="block">
+        <h3 className="block-title">AI</h3>
+        <p className="lede">Used for retakes, clips and chapters.</p>
+        <div className="compact-settings">
+          <label>Model <select value={provider} onChange={(e) => { const p = e.target.value as AiProvider; setProvider(p); writeSetting(SETTINGS.aiProvider, p) }}>
+            <option value="claude">Claude, your API key (best picks)</option>
+            <option value="ollama">Ollama, free and offline on this Mac</option>
+          </select></label>
+        </div>
+        {provider === 'ollama' && <>
+          <p className="footnote">Install Ollama, then run <code>ollama pull qwen3:8b</code> in Terminal. It found fewer good clips than Claude in testing. Cold opens always use Claude.</p>
+          <Press className="text-button" onClick={() => openExternal('https://ollama.com/download')}>Download Ollama</Press>
+        </>}
+      </section>
+
+      <section className="block">
+        <h3 className="block-title">Claude API key</h3>
+        <p className="lede">Used for cold opens, and for everything else when Claude is chosen above. Stays on this Mac.</p>
+        <input className="api-key" type="password" autoComplete="off" placeholder="sk-ant-…" value={key} onChange={(e) => { setKey(e.target.value); writeSetting(SETTINGS.claudeKey, e.target.value.trim()) }} />
+        <Press className="text-button" onClick={() => openExternal('https://console.anthropic.com/settings/keys')}>Get a key at console.anthropic.com</Press>
+        <div className="compact-settings">
+          <label>Claude model <select value={model} onChange={(e) => { setModel(e.target.value as typeof model); writeSetting(SETTINGS.claudeModel, e.target.value) }}>
+            {CLAUDE_MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select></label>
+        </div>
+      </section>
+
+      <section className="block">
+        <h3 className="block-title">Run log</h3>
+        <p className="lede">Every action is written here with what happened. Useful when something doesn't work.</p>
+        <p className="path">{log ?? 'In the browser demo, the log goes to the console.'}</p>
+      </section>
+
+      {isPremiereHost() && <section className="block">
+        <h3 className="block-title">Premiere API check</h3>
+        <SpikePanel />
+      </section>}
+    </div>
+  )
+}
