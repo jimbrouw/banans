@@ -152,3 +152,135 @@ def test_xml_builder_in_point_clap_offset(tmp_path):
     b.write(out)
     text = out.read_text()
     assert "<in>11</in>" in text
+
+
+def test_discover_local_media_ignores_appledouble_and_subfolders(tmp_path):
+    from roughcut_engine.lucid_watcher import discover_local_media
+
+    session = tmp_path / "2026-11-17 13-54-38"
+    session.mkdir()
+
+    # Standard downloaded filenames
+    for i in (3, 1, 2):
+        (session / f"cam{i}_2026-11-17 13-54-38.mp4").touch()
+        (session / f"mic{i}_RODECASTER_MIC_{i}.wav").touch()
+
+    # AppleDouble & hidden files that macOS puts on external drives
+    (session / "._cam1_2026-11-17 13-54-38.mp4").touch()
+    (session / "._mic1_RODECASTER_MIC_1.wav").touch()
+    (session / ".DS_Store").touch()
+
+    # Subfolder (Master 4K) that must be ignored
+    masters = session / "Master 4K"
+    masters.mkdir()
+    for i in (1, 2, 3):
+        (masters / f"17_135438_Channel{i}.mov").touch()
+
+    cams, mics = discover_local_media(session)
+    assert [p.name for p in cams] == [
+        "cam1_2026-11-17 13-54-38.mp4",
+        "cam2_2026-11-17 13-54-38.mp4",
+        "cam3_2026-11-17 13-54-38.mp4",
+    ]
+    assert [p.name for p in mics] == [
+        "mic1_RODECASTER_MIC_1.wav",
+        "mic2_RODECASTER_MIC_2.wav",
+        "mic3_RODECASTER_MIC_3.wav",
+    ]
+
+
+def test_discover_local_media_channels_and_fallback(tmp_path):
+    from roughcut_engine.lucid_watcher import discover_local_media
+
+    # Channel1..3 .mov + RODECASTER_MIC_1..3.wav
+    ch_dir = tmp_path / "channels"
+    ch_dir.mkdir()
+    (ch_dir / "17_135438_Channel3.mov").touch()
+    (ch_dir / "17_135438_Channel1.mov").touch()
+    (ch_dir / "17_135438_Channel2.mov").touch()
+    (ch_dir / "._17_135438_Channel1.mov").touch()
+    (ch_dir / "RODECASTER_MIC_2.wav").touch()
+    (ch_dir / "RODECASTER_MIC_3.wav").touch()
+    (ch_dir / "RODECASTER_MIC_1.wav").touch()
+    (ch_dir / "._RODECASTER_MIC_1.wav").touch()
+
+    cams, mics = discover_local_media(ch_dir)
+    assert [p.name for p in cams] == [
+        "17_135438_Channel1.mov",
+        "17_135438_Channel2.mov",
+        "17_135438_Channel3.mov",
+    ]
+    assert [p.name for p in mics] == [
+        "RODECASTER_MIC_1.wav",
+        "RODECASTER_MIC_2.wav",
+        "RODECASTER_MIC_3.wav",
+    ]
+
+    # Generic sorted filenames fallback
+    generic_dir = tmp_path / "generic"
+    generic_dir.mkdir()
+    for name in ("z_angle.mp4", "a_angle.mov", "m_angle.mp4", "stem_b.wav", "stem_a.wav", "stem_c.wav"):
+        (generic_dir / name).touch()
+    cams2, mics2 = discover_local_media(generic_dir)
+    assert [p.name for p in cams2] == ["a_angle.mov", "m_angle.mp4", "z_angle.mp4"]
+    assert [p.name for p in mics2] == ["stem_a.wav", "stem_b.wav", "stem_c.wav"]
+
+    # Missing media raises FileNotFoundError
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    with pytest.raises(FileNotFoundError):
+        discover_local_media(empty_dir)
+
+
+def test_process_local_folder_end_to_end(tmp_path, monkeypatch):
+    from roughcut_engine.lucid_watcher import process_local_folder
+    from roughcut_engine.sync import Placement, SyncResult
+    from roughcut_engine.config import IngestConfig
+    import roughcut_engine.sync as sync_mod
+    import roughcut_engine.levels as levels_mod
+
+    session = tmp_path / "2026-11-17 13-54-38"
+    session.mkdir()
+    cams = [session / f"cam{i}_clip.mp4" for i in (1, 2, 3)]
+    mics = [session / f"mic{i}_RODECASTER_MIC_{i}.wav" for i in (1, 2, 3)]
+    for p in cams + mics:
+        p.touch()
+
+    fps = Fraction(30000, 1001)
+
+    def fake_sync(cam_paths, mic_paths):
+        return SyncResult(
+            cameras=[Placement(path=p, start=0.0, method="waveform", duration=30.0) for p in cam_paths],
+            mics=[Placement(path=p, start=0.0, method="same-recorder", duration=30.0) for p in mic_paths],
+            duration=30.0,
+            fps=fps,
+        )
+
+    def fake_levels(path, channel=None, rate=20):
+        # 30s at 20 Hz = 600 samples; alternate active speaker every 10s
+        n = 30 * rate
+        db = np.full(n, -60.0)
+        if "mic1" in path:
+            db[:200] = -18.0
+        elif "mic2" in path:
+            db[200:400] = -18.0
+        else:
+            db[400:] = -18.0
+        return {"db": db.tolist()}
+
+    monkeypatch.setattr(sync_mod, "sync_session", fake_sync)
+    monkeypatch.setattr(levels_mod, "levels", fake_levels)
+    monkeypatch.setattr(IngestConfig, "load", classmethod(lambda cls: cls(clap_sync_offset_frames=-4)))
+
+    progress_events = []
+    out_xml = process_local_folder(session, progress_callback=lambda pct, msg: progress_events.append((pct, msg)))
+
+    assert out_xml == session / "2026-11-17 13-54-38 - Auto Cut V1.xml"
+    assert out_xml.is_file()
+    text = out_xml.read_text()
+    assert "<name>2026-11-17 13-54-38 - Synced Stack</name>" in text
+    assert "<name>2026-11-17 13-54-38 - Auto Cut V1</name>" in text
+    # Negative clap offset (-4 frames) delays mic start by 4 frames rather than using negative <in>
+    assert "<start>4</start>" in text
+    assert "<in>-4</in>" not in text
+    assert progress_events[-1][0] == 100.0

@@ -16,7 +16,15 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .config import IngestConfig
-from .lucid_watcher import LucidWatcher, WatchConfig, StateStore, process_batch, State, scan_mount_batches
+from .lucid_watcher import (
+    LucidWatcher,
+    WatchConfig,
+    StateStore,
+    process_batch,
+    process_local_folder,
+    State,
+    scan_mount_batches,
+)
 
 
 class ActionButton(tk.Label):
@@ -283,11 +291,24 @@ class IngestApp(tk.Tk):
             bg="#e5a93b",
             fg="#000000",
             hover_bg="#f0b84c",
-            font=("SF Pro Text", 13, "bold"),
-            padx=18,
-            pady=9,
+            font=("SF Pro Text", 12, "bold"),
+            padx=14,
+            pady=8,
         )
         self.sync_btn.pack(side="left")
+
+        self.local_btn = ActionButton(
+            btn_row,
+            text="Cut from Local Folder…",
+            command=self._cut_local_folder,
+            bg="#1f6feb",
+            fg="#ffffff",
+            hover_bg="#388bfd",
+            font=("SF Pro Text", 12, "bold"),
+            padx=12,
+            pady=8,
+        )
+        self.local_btn.pack(side="left", padx=(8, 0))
 
         self.open_prem_btn = ActionButton(
             btn_row,
@@ -297,10 +318,10 @@ class IngestApp(tk.Tk):
             fg="#ffffff",
             hover_bg="#30363d",
             font=("SF Pro Text", 12, "bold"),
-            padx=14,
+            padx=12,
             pady=8,
         )
-        self.open_prem_btn.pack(side="left", padx=12)
+        self.open_prem_btn.pack(side="left", padx=(8, 0))
 
         # ── Visual Progress Indicator ──
         self.prog_frame = tk.Frame(ep_box, bg="#161b22")
@@ -391,7 +412,7 @@ class IngestApp(tk.Tk):
             font=("SF Pro Text", 11),
         ).pack(side="left")
 
-        self.clap_offset_var = tk.StringVar(value=str(getattr(self.cfg, "clap_sync_offset_frames", 11)))
+        self.clap_offset_var = tk.StringVar(value=str(getattr(self.cfg, "clap_sync_offset_frames", -4)))
         clap_entry = tk.Entry(
             hw_row,
             textvariable=self.clap_offset_var,
@@ -538,7 +559,7 @@ class IngestApp(tk.Tk):
         try:
             self.cfg.clap_sync_offset_frames = int(self.clap_offset_var.get().strip())
         except Exception:
-            self.cfg.clap_sync_offset_frames = 11
+            self.cfg.clap_sync_offset_frames = -4
         self.cfg.save()
 
     def _populate_episodes(self):
@@ -619,6 +640,8 @@ class IngestApp(tk.Tk):
             messagebox.showwarning("RoughCut Ingest", "Please select a valid episode to sync & cut.")
             return
 
+        self._save_options()
+
         def _worker():
             batches = self.store.load()
             batch = batches.get(target_key)
@@ -626,7 +649,7 @@ class IngestApp(tk.Tk):
                 self.log(f"Batch {target_key} not in store. Please start watcher to scan.")
                 return
 
-            self.sync_btn.set_enabled(False)
+            self.after(0, lambda: (self.sync_btn.set_enabled(False), self.local_btn.set_enabled(False)))
             self.set_progress(1.0, f"Starting pipeline for {target_key}...")
             self.log(f"Target destination: {self.cfg.local_download_dir or 'Streaming directly from LucidLink'}")
 
@@ -636,18 +659,66 @@ class IngestApp(tk.Tk):
                 self.set_progress(100.0, "SUCCESS: Auto Cut V1.xml ready!")
                 if self.auto_prem_var.get():
                     self.log("Automatically launching sequence in Adobe Premiere Pro...")
-                    self._open_in_premiere()
+                    self.after(0, self._open_in_premiere)
                 else:
-                    messagebox.showinfo(
-                        "RoughCut Ingest",
-                        f"Successfully generated RoughCut for episode:\n{target_key}\n\nXML Location:\n{batch.output}\n\nClick 'Open in Premiere Pro' to view your cut!",
+                    out_path = batch.output
+                    self.after(
+                        0,
+                        lambda: messagebox.showinfo(
+                            "RoughCut Ingest",
+                            f"Successfully generated RoughCut for episode:\n{target_key}\n\nXML Location:\n{out_path}\n\nClick 'Open in Premiere Pro' to view your cut!",
+                        ),
                     )
             except Exception as e:
-                self.set_progress(0.0, f"Error: {e}")
-                self.log(f"ERROR processing {target_key}: {e}")
-                messagebox.showerror("RoughCut Ingest Error", str(e))
+                err_msg = str(e)
+                self.set_progress(0.0, f"Error: {err_msg}")
+                self.log(f"ERROR processing {target_key}: {err_msg}")
+                self.after(0, lambda: messagebox.showerror("RoughCut Ingest Error", err_msg))
             finally:
-                self.sync_btn.set_enabled(True)
+                self.after(0, lambda: (self.sync_btn.set_enabled(True), self.local_btn.set_enabled(True)))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _cut_local_folder(self):
+        initial = self.cfg.local_download_dir if self.cfg.local_download_dir and Path(self.cfg.local_download_dir).is_dir() else None
+        chosen = filedialog.askdirectory(
+            title="Select Local Recording Folder (3 Cameras + 3 Mic WAVs)",
+            initialdir=initial,
+        )
+        if not chosen:
+            return
+
+        self._save_options()
+        folder = Path(chosen)
+
+        def _worker():
+            self.after(0, lambda: (self.sync_btn.set_enabled(False), self.local_btn.set_enabled(False)))
+            self.set_progress(1.0, f"Starting local folder cut for {folder.name}...")
+            self.log(f"Offline local mode: {folder}")
+
+            try:
+                out_xml = process_local_folder(folder, progress_callback=self.set_progress)
+                self.last_batch_output = str(out_xml)
+                self.set_progress(100.0, f"SUCCESS: {out_xml.name} ready!")
+                if self.auto_prem_var.get():
+                    self.log("Automatically launching sequence in Adobe Premiere Pro...")
+                    self.after(0, self._open_in_premiere)
+                else:
+                    out_str = str(out_xml)
+                    self.after(
+                        0,
+                        lambda: messagebox.showinfo(
+                            "RoughCut Local Cut",
+                            f"Successfully generated RoughCut for folder:\n{folder.name}\n\nXML Location:\n{out_str}\n\nClick 'Open in Premiere Pro' to view your cut!",
+                        ),
+                    )
+            except Exception as e:
+                err_msg = str(e)
+                self.set_progress(0.0, f"Error: {err_msg}")
+                self.log(f"ERROR processing local folder {folder}: {err_msg}")
+                self.after(0, lambda: messagebox.showerror("RoughCut Local Folder Error", err_msg))
+            finally:
+                self.after(0, lambda: (self.sync_btn.set_enabled(True), self.local_btn.set_enabled(True)))
 
         threading.Thread(target=_worker, daemon=True).start()
 
