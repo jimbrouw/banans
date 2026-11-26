@@ -21,8 +21,8 @@ class IngestConfig:
     filespace_id: str = "77292657-00c2-4460-b955-5885a36ddfe1"
     mount_path: str = "/Volumes/specialized2026/studio"
     cloud_output_dir: str = "/Studio Recordings/RoughCut Auto Cuts"
-    # Studio hardware calibration (number of frames to advance audio to match Sony FX30 / Zoom box HDMI video delay)
-    clap_sync_offset_frames: int = 11
+    # Studio hardware calibration (frames to advance audio; negative delays audio relative to video)
+    clap_sync_offset_frames: int = -4
     # 4K Masters Overnight Ingest options
     download_masters_overnight: bool = True
     masters_cloud_dir: str = "/Studio Recordings/Just-In Masters"

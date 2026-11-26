@@ -480,14 +480,200 @@ def find_masters_for_batch(b: Batch, cfg: WatchConfig, user_cfg) -> list[tuple[s
     return [(ch, channel_files[ch][1]) for ch in sorted(channel_files.keys())]
 
 
-def process_batch(b: Batch, cfg: WatchConfig, store: StateStore, progress_callback=None) -> None:
-    """Execute headless sync, auto-cut, XML publishing, and optional external drive download."""
+def _match_numbered(files: list[Path], patterns: list[str]) -> list[Path] | None:
+    """Match numbered 1..3 media files against ordered regex patterns."""
+    for pat in patterns:
+        rx = re.compile(pat, re.IGNORECASE)
+        matched: dict[int, Path] = {}
+        for p in files:
+            m = rx.search(p.stem)
+            if m:
+                idx = int(m.group(1))
+                matched.setdefault(idx, p)
+        if all(i in matched for i in (1, 2, 3)):
+            return [matched[1], matched[2], matched[3]]
+    return None
+
+
+def discover_local_media(folder: Path) -> tuple[list[Path], list[Path]]:
+    """Auto-detect 3 camera video files and 3 mic WAV stems inside a local folder.
+
+    Ignores hidden/AppleDouble files (`._*`, `.DS_Store`) and subdirectories (e.g. `Master 4K/`).
+    """
+    folder = Path(folder).expanduser()
+    if not folder.is_dir():
+        raise FileNotFoundError(f"Local folder does not exist or is not a directory: {folder}")
+
+    entries = sorted(
+        (p for p in folder.iterdir() if p.is_file() and not p.name.startswith(".")),
+        key=lambda p: p.name.lower(),
+    )
+    videos = [p for p in entries if p.suffix.lower() in (".mp4", ".mov")]
+    wavs = [p for p in entries if p.suffix.lower() == ".wav"]
+
+    cams = _match_numbered(
+        videos,
+        [
+            r"(?:^|[^a-z0-9])cam[_ -]?([123])(?:[^0-9]|$)",
+            r"(?:^|[^a-z0-9])channel[_ -]?([123])(?:[^0-9]|$)",
+        ],
+    )
+    if cams is None:
+        if len(videos) < 3:
+            raise FileNotFoundError(
+                f"Expected 3 camera video files (.mp4/.mov) in {folder}, found {len(videos)}."
+            )
+        cams = videos[:3]
+
+    mics = _match_numbered(
+        wavs,
+        [
+            r"(?:^|[^a-z0-9])mic[_ -]?([123])(?:[^0-9]|$)",
+            r"rodecaster[_ -]?mic[_ -]?([123])(?:[^0-9]|$)",
+        ],
+    )
+    if mics is None:
+        if len(wavs) < 3:
+            raise FileNotFoundError(
+                f"Expected 3 mic audio stems (.wav) in {folder}, found {len(wavs)}."
+            )
+        mics = wavs[:3]
+
+    return cams, mics
+
+
+def _build_cut_xml(
+    session_name: str,
+    target_cams: list[Path],
+    target_mics: list[Path],
+    user_cfg,
+    notify,
+    progress_range: tuple[float, float] = (65.0, 95.0),
+):
+    """Run sync -> loudness levels -> auto-cut -> FCP7 XML Builder on 3 cams and 3 mics."""
     import numpy as np
-    from fractions import Fraction
     from .sync import sync_session
     from .levels import levels
-    from .auto_cut import auto_cut, CameraPlan, cuts_to_intervals, place_envelope, RATE
+    from .auto_cut import auto_cut, CameraPlan, cuts_to_intervals, RATE
     from .xml_builder import Builder, Source, Shot
+
+    lo, hi = progress_range
+
+    def _pct(frac: float) -> float:
+        return lo + (hi - lo) * frac
+
+    # 1. Headless audio sync
+    notify(_pct(0.0), "Analyzing audio waveforms to calculate sub-frame sync offsets...")
+    res = sync_session(target_cams, target_mics)
+    notify(_pct(0.33), f"Sync locked! Timeline duration: {res.duration:.1f}s")
+
+    # 2. Read RMS loudness envelopes for the 3 mics (anchored at mic recording start T=0)
+    notify(_pct(0.43), "Extracting RMS dialogue loudness & detecting active speakers...")
+    clap_advance_frames = getattr(user_cfg, "clap_sync_offset_frames", -4)
+    audio_advance_s = (clap_advance_frames / float(res.fps)) if clap_advance_frames else 0.0
+    offset_idx = int(round(audio_advance_s * RATE))
+
+    envelopes = []
+    for mic_path in target_mics:
+        lvl = levels(str(mic_path), channel=None, rate=RATE)
+        arr = np.asarray(lvl["db"], dtype=float)
+        if offset_idx > 0 and len(arr) > offset_idx:
+            arr = arr[offset_idx:]
+        elif offset_idx < 0:
+            arr = np.concatenate([np.full(-offset_idx, -100.0), arr])
+        envelopes.append(arr)
+
+    # 3. Generate Auto-Cut
+    notify(_pct(0.67), "Executing multicam auto-cut rules, crosstalk detection & reaction shots...")
+    mic_dur = max(0.1, min(p.duration for p in res.mics) - audio_advance_s)
+    total_frames = int(round(mic_dur * float(res.fps)))
+    # Studio camera mapping:
+    # A1 (Host Mic) -> Cam 3 (Host Close-up) -> index 2
+    # A2 & A3 (Guest Mics) -> Cam 2 (Guest Close-up) -> index 1
+    # Wide -> Cam 1 -> index 0
+    plan = CameraPlan(
+        camera_for_mic=[2, 1, 1],
+        wide=0,
+        coverage=[(0.0, mic_dur) for _ in res.cameras],
+    )
+    cuts_res = auto_cut(envelopes, plan, total_frames, float(res.fps), reactions=True)
+    best_cut = cuts_res[0]
+    notify(_pct(0.90), f"Auto-cut score: {best_cut.score}/100 ({len(best_cut.cuts)} camera switches)")
+
+    intervals = cuts_to_intervals(best_cut.cuts, total_frames)
+    shots = [Shot(start=s, end=e, camera=f"cam{cam+1}", reason=r) for s, e, cam, r in intervals]
+
+    # 4. Build Final Cut Pro 7 XML anchored at common timeline start (00:00:00:00) at 29.97 fps
+    notify(_pct(1.0), "Building Final Cut Pro 7 XML sequence at 29.97 fps...")
+    builder = Builder(fps=res.fps)
+    mic_ref_start = res.mics[0].start
+
+    cams_src = [
+        Source(
+            id=f"cam{i}",
+            path=p.path,
+            kind="video",
+            duration=p.duration,
+            start=max(0.0, p.start - mic_ref_start),
+            in_point=max(0.0, mic_ref_start - p.start),
+        )
+        for i, p in enumerate(res.cameras, 1)
+    ]
+
+    mics_src = [
+        Source(
+            id=f"mic{i}",
+            path=p.path,
+            kind="audio",
+            duration=p.duration,
+            start=max(0.0, -audio_advance_s),
+            in_point=max(0.0, audio_advance_s),
+        )
+        for i, p in enumerate(res.mics, 1)
+    ]
+
+    builder.synced_stack(f"{session_name} - Synced Stack", cams_src, mics_src)
+    builder.auto_cut(f"{session_name} - Auto Cut V1", cams_src, mics_src, shots)
+    return builder, res
+
+
+def process_local_folder(folder: Path, progress_callback=None) -> Path:
+    """Run sync, auto-cut, and XML generation directly on a local folder without LucidLink."""
+    from .config import IngestConfig
+
+    def notify(pct: float, msg: str):
+        log.info("[%d%%] %s", int(pct), msg)
+        if progress_callback:
+            progress_callback(pct, msg)
+
+    folder = Path(folder).expanduser().resolve()
+    notify(2.0, f"Scanning local folder: {folder.name}")
+    target_cams, target_mics = discover_local_media(folder)
+    notify(
+        10.0,
+        f"Found 3 cameras ({', '.join(p.name for p in target_cams)}) "
+        f"and 3 mics ({', '.join(p.name for p in target_mics)})",
+    )
+
+    user_cfg = IngestConfig.load()
+    builder, _res = _build_cut_xml(
+        folder.name,
+        target_cams,
+        target_mics,
+        user_cfg,
+        notify,
+        progress_range=(15.0, 92.0),
+    )
+
+    out_xml = folder / f"{folder.name} - Auto Cut V1.xml"
+    notify(96.0, f"Writing XML sequence: {out_xml.name}")
+    builder.write(out_xml)
+    notify(100.0, f"Local auto-cut complete! XML saved to {out_xml}")
+    return out_xml
+
+
+def process_batch(b: Batch, cfg: WatchConfig, store: StateStore, progress_callback=None) -> None:
+    """Execute headless sync, auto-cut, XML publishing, and optional external drive download."""
     from .config import IngestConfig
 
     def notify(pct: float, msg: str):
@@ -563,74 +749,14 @@ def process_batch(b: Batch, cfg: WatchConfig, store: StateStore, progress_callba
                 except Exception as e:
                     log.warning("Could not pre-pin %s: %s", rel, e)
 
-        # 1. Headless audio sync
-        notify(65.0, "Analyzing audio waveforms to calculate sub-frame sync offsets...")
-        res = sync_session(target_cams, target_mics)
-        notify(75.0, f"Sync locked! Timeline duration: {res.duration:.1f}s")
-
-        # 2. Read RMS loudness envelopes for the 3 mics (anchored at mic recording start T=0)
-        notify(78.0, "Extracting RMS dialogue loudness & detecting active speakers...")
-        clap_advance_frames = getattr(user_cfg, "clap_sync_offset_frames", 11)
-        audio_advance_s = (clap_advance_frames / float(res.fps)) if clap_advance_frames else 0.0
-        offset_idx = int(round(audio_advance_s * RATE))
-
-        envelopes = []
-        for i, mic_path in enumerate(target_mics):
-            lvl = levels(str(mic_path), channel=None, rate=RATE)
-            arr = np.asarray(lvl["db"], dtype=float)
-            envelopes.append(arr[offset_idx:] if offset_idx > 0 and len(arr) > offset_idx else arr)
-
-        # 3. Generate Auto-Cut
-        notify(85.0, "Executing multicam auto-cut rules, crosstalk detection & reaction shots...")
-        mic_dur = max(0.1, min(p.duration for p in res.mics) - audio_advance_s)
-        total_frames = int(round(mic_dur * float(res.fps)))
-        # Studio camera mapping:
-        # A1 (Host Mic) -> Cam 3 (Host Close-up) -> index 2
-        # A2 & A3 (Guest Mics) -> Cam 2 (Guest Close-up) -> index 1
-        # Wide -> Cam 1 -> index 0
-        plan = CameraPlan(
-            camera_for_mic=[2, 1, 1],
-            wide=0,
-            coverage=[(0.0, mic_dur) for _ in res.cameras]
+        builder, res = _build_cut_xml(
+            b.key,
+            target_cams,
+            target_mics,
+            user_cfg,
+            notify,
+            progress_range=(65.0, 95.0),
         )
-        cuts_res = auto_cut(envelopes, plan, total_frames, float(res.fps), reactions=True)
-        best_cut = cuts_res[0]
-        notify(92.0, f"Auto-cut score: {best_cut.score}/100 ({len(best_cut.cuts)} camera switches)")
-
-        intervals = cuts_to_intervals(best_cut.cuts, total_frames)
-        shots = [Shot(start=s, end=e, camera=f"cam{cam+1}", reason=r) for s, e, cam, r in intervals]
-
-        # 4. Build Final Cut Pro 7 XML anchored at common timeline start (00:00:00:00) at 29.97 fps
-        notify(95.0, "Building Final Cut Pro 7 XML sequence at 29.97 fps...")
-        builder = Builder(fps=res.fps)
-        mic_ref_start = res.mics[0].start
-
-        cams_src = [
-            Source(
-                id=f"cam{i}",
-                path=p.path,
-                kind="video",
-                duration=p.duration,
-                start=max(0.0, p.start - mic_ref_start),
-                in_point=max(0.0, mic_ref_start - p.start)
-            )
-            for i, p in enumerate(res.cameras, 1)
-        ]
-
-        mics_src = [
-            Source(
-                id=f"mic{i}",
-                path=p.path,
-                kind="audio",
-                duration=p.duration,
-                start=0.0,
-                in_point=audio_advance_s
-            )
-            for i, p in enumerate(res.mics, 1)
-        ]
-
-        builder.synced_stack(f"{b.key} - Synced Stack", cams_src, mics_src)
-        builder.auto_cut(f"{b.key} - Auto Cut V1", cams_src, mics_src, shots)
 
         # 5. Publish XML
         out_filename = f"{b.key} - Auto Cut V1.xml"
@@ -688,11 +814,25 @@ def process_batch(b: Batch, cfg: WatchConfig, store: StateStore, progress_callba
         b.error = str(e)
         store.save(b)
 
+
+def main_local(argv: list[str] | None = None) -> None:
+    import argparse
+    import sys
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    parser = argparse.ArgumentParser(
+        prog="roughcut-local",
+        description="Run RoughCut sync and multi-cam auto-cut directly on a local recording folder.",
+    )
+    parser.add_argument("folder", help="Path to local folder containing 3 camera files and 3 mic WAV files")
+    args = parser.parse_args(argv)
+
+    try:
+        out_xml = process_local_folder(Path(args.folder))
     except Exception as e:
-        log.exception("Error processing batch %s: %s", b.key, e)
-        b.state = State.FAILED
-        b.error = str(e)
-        store.save(b)
+        log.error("Failed to process local folder: %s", e)
+        sys.exit(1)
+    print(out_xml)
 
 
 def main() -> None:

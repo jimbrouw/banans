@@ -39,9 +39,9 @@ class Profile:
 
 
 PROFILES = [
-    Profile("Balanced (Recommended)", 2.5, "medium", 14.0, 2.5),
-    Profile("Dynamic Cut", 1.5, "high", 9.0, 1.8),
-    Profile("Conservative Dialogue", 4.0, "low", 24.0, 4.0),
+    Profile("Balanced (Recommended)", 2.5, "medium", 38.0, 3.0),
+    Profile("Dynamic Cut", 1.5, "high", 28.0, 2.4),
+    Profile("Conservative Dialogue", 4.0, "low", 55.0, 4.0),
 ]
 MAX_CUTS_PER_MIN = {"high": 12, "medium": 8, "low": 5}
 
@@ -203,22 +203,29 @@ def add_reactions(cuts: list[Cut], segments: list[Segment], envelopes: list[np.n
         if speaker is None:
             continue
         t = start
+        rx_count = 0
         while end - t > profile.reaction_after + profile.reaction_len + profile.min_shot:
-            lo, hi = t + profile.reaction_after * 0.6, min(t + profile.reaction_after * 1.4, end - profile.reaction_len - profile.min_shot)
+            lo = t + profile.reaction_after * 0.85
+            hi = min(t + profile.reaction_after * 1.25, end - profile.reaction_len - profile.min_shot)
             if hi <= lo:
                 break
             a, b = int(lo * RATE), int(hi * RATE)
             env = envelopes[speaker][a:b]
             if len(env) < 3:
                 break
-            breath = (a + int(np.argmin(np.convolve(env, np.ones(3) / 3, mode="same")))) / RATE
+            smoothed = np.convolve(env, np.ones(3) / 3, mode="same")
+            breath = (a + int(np.argmin(smoothed))) / RATE
             listener = _listener(segments, speaker, breath, plan)
+            if rx_count % 2 == 1 and plan.wide is not None and plan.rolling(plan.wide, breath):
+                listener = plan.wide
             if listener is None or not plan.rolling(listener, breath):
                 break
+            rx_len = profile.reaction_len + (0.6 if rx_count % 2 == 1 else 0.0)
             out.append(Cut(round(breath * fps), listener, "reaction"))
-            back = breath + profile.reaction_len
+            back = breath + rx_len
             out.append(Cut(round(back * fps), cut.camera, "speaker"))
             t = back
+            rx_count += 1
     return out
 
 
